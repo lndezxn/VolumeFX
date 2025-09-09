@@ -4,7 +4,7 @@
 
 通过git将此仓库clone到本地：
 ```shell
-git clone https://gitee.com/pku-vcl/vcx2024.git
+git clone https://gitee.com/pku-vcl/vci-2025
 ```
 切换到lab0分支：
 ```shell
