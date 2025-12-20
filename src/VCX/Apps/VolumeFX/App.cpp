@@ -10,6 +10,18 @@
 #include <fstream>
 #include <iomanip>
 #include <system_error>
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <mmsystem.h>
+#undef APIENTRY
+
+#pragma comment(lib, "winmm.lib")
 #include <span>
 #include <sstream>
 #include <string>
@@ -73,6 +85,7 @@ namespace VCX::Apps::VolumeFX {
     }
 
     App::~App() {
+        stopAudioPlayback();
         for (auto & tex : _densityTex) {
             if (tex != 0) {
                 glDeleteTextures(1, &tex);
@@ -288,6 +301,30 @@ namespace VCX::Apps::VolumeFX {
         _visualizationGain = glm::clamp(_baseGain * scale, 0.05f, 8.0f);
     }
 
+    void App::stopAudioPlayback() {
+        if (_audioPlaying) {
+            PlaySoundW(nullptr, nullptr, 0);
+        }
+        _audioPlaying = false;
+    }
+
+    void App::startAudioPlayback(const std::wstring & path, bool loop) {
+        stopAudioPlayback();
+        if (path.empty()) {
+            return;
+        }
+        UINT flags = SND_FILENAME | SND_ASYNC;
+        if (loop) {
+            flags |= SND_LOOP;
+        }
+        if (! PlaySoundW(path.c_str(), nullptr, flags)) {
+            _audioStatus = "Failed to play audio.";
+            _audioPlaying = false;
+        } else {
+            _audioPlaying = true;
+        }
+    }
+
     float App::sampleAudioEnvelope(float t) const {
         if (_audioEnvelope.empty() || _audioSampleRate <= 0.0f) {
             return 0.0f;
@@ -317,6 +354,7 @@ namespace VCX::Apps::VolumeFX {
             return false;
         }
 
+        stopAudioPlayback();
         _audioLoaded = false;
         _audioEnvelope.clear();
         _audioSampleRate = 0.0f;
@@ -472,6 +510,9 @@ namespace VCX::Apps::VolumeFX {
         _audioLoaded = true;
         _currentAudioLevel = 0.0f;
         _mockPlaybackTime = 0.0f;
+        _audioPathW = resolved.wstring();
+
+        startAudioPlayback(_audioPathW, _audioLoopPlayback);
 
         std::ostringstream oss;
         oss << "Loaded WAV (" << fmt.numChannels << " ch, " << fmt.sampleRate << " Hz, "
@@ -542,12 +583,17 @@ namespace VCX::Apps::VolumeFX {
             _audioDuration = 0.0f;
             _currentAudioLevel = 0.0f;
             _mockPlaybackTime = 0.0f;
+            stopAudioPlayback();
         }
         ImGui::SameLine();
         if (ImGui::Button("Re-seed volume")) {
             initDensityTextures();
         }
+        bool loopBefore = _audioLoopPlayback;
         ImGui::Checkbox("Loop playback", &_audioLoopPlayback);
+        if (_audioLoopPlayback != loopBefore && _audioPlaying && ! _audioPathW.empty()) {
+            startAudioPlayback(_audioPathW, _audioLoopPlayback);
+        }
         float const playbackRatio = (_audioDuration > 0.0f) ? std::clamp(_mockPlaybackTime / _audioDuration, 0.0f, 1.0f) : 0.0f;
         ImGui::ProgressBar(playbackRatio, ImVec2(-1.0f, 0.0f));
         ImGui::Text("Playback: %.2f / %.2f s", _mockPlaybackTime, _audioDuration);

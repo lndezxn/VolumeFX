@@ -32,6 +32,8 @@ namespace VCX::Apps::VolumeFX {
         void renderUI();
         void updateAudioReactivity();
         bool loadAudioFile(const char * path);
+        void startAudioPlayback(const std::wstring & path, bool loop);
+        void stopAudioPlayback();
         float sampleAudioEnvelope(float t) const;
         glm::vec3 cameraPosition() const;
 
@@ -54,6 +56,8 @@ namespace VCX::Apps::VolumeFX {
         std::vector<float>    _audioEnvelope;
         bool                  _audioLoaded = false;
         bool                  _audioLoopPlayback = true;
+        bool                  _audioPlaying = false;
+        std::wstring          _audioPathW;
         float                 _audioSampleRate = 0.0f;
         float                 _audioDuration = 0.0f;
         float                 _currentAudioLevel = 0.0f;
