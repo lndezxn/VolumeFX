@@ -2,6 +2,7 @@
 
 #include <array>
 #include <string>
+#include <vector>
 
 #include <glad/glad.h>
 
@@ -29,10 +30,14 @@ namespace VCX::Apps::VolumeFX {
         void updateCamera();
         void renderScene();
         void renderUI();
+        void updateAudioReactivity();
+        bool loadAudioFile(const char * path);
+        float sampleAudioEnvelope(float t) const;
         glm::vec3 cameraPosition() const;
 
         Engine::GL::UniqueProgram           _program;
         Engine::GL::UniqueProgram           _decayProgram;
+        Engine::GL::UniqueProgram           _injectProgram;
         Engine::GL::UniqueIndexedRenderItem _cube;
         std::array<GLuint, 2>               _densityTex { 0, 0 };
         int                                 _densitySrc = 0;
@@ -46,15 +51,31 @@ namespace VCX::Apps::VolumeFX {
 
         std::array<char, 512> _audioPathBuffer { };
         std::string           _audioStatus = "No audio loaded.";
+        std::vector<float>    _audioEnvelope;
+        bool                  _audioLoaded = false;
+        bool                  _audioLoopPlayback = true;
+        float                 _audioSampleRate = 0.0f;
+        float                 _audioDuration = 0.0f;
+        float                 _currentAudioLevel = 0.0f;
         float                 _visualizationGain = 1.0f;
+        float                 _baseGain = 1.0f;
+        bool                  _autoGainEnabled = true;
+        float                 _autoGainDepth = 0.35f;
+        float                 _autoGainSpeed = 1.2f;
+        float                 _autoGainPhase = 0.0f;
         float                 _densityThreshold = 0.02f;
-        float                 _dissipation = 0.995f;
+        float                 _dissipation = 0.9992f;
+        float                 _emitStrength = 1.0f;
+        float                 _emitSigma = 0.08f;
+        float                 _emitterRadius = 0.25f;
+        int                   _emitterCount = 1;
         float                 _mockPlaybackTime = 0.0f;
 
         bool  _isOrbiting = false;
 
         void initDensityTextures();
         void decayDensityField();
+        void injectDensityField();
         GLuint densityReadTexture() const;
         GLuint densityWriteTexture() const;
     };

@@ -5,12 +5,19 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <system_error>
 #include <span>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#include <glm/common.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/trigonometric.hpp>
@@ -49,6 +56,8 @@ namespace VCX::Apps::VolumeFX {
             Engine::GL::SharedShader("assets/shaders/volume_raymarch.frag") })),
         _decayProgram(Engine::GL::UniqueProgram({
             Engine::GL::SharedShader("assets/shaders/density_decay.comp") })),
+        _injectProgram(Engine::GL::UniqueProgram({
+            Engine::GL::SharedShader("assets/shaders/density_inject.comp") })),
         _cube(
             Engine::GL::VertexLayout()
                 .Add<Vertex>("vertex", Engine::GL::DrawFrequency::Static)
@@ -57,6 +66,7 @@ namespace VCX::Apps::VolumeFX {
         _cube.UpdateVertexBuffer("vertex", Engine::make_span_bytes<Vertex>(std::span(c_CubeVertices)));
         _cube.UpdateElementBuffer(c_CubeIndices);
         initDensityTextures();
+        _baseGain = _visualizationGain;
         _program.GetUniforms().SetByName("u_DensityTex", 0);
         _decayProgram.GetUniforms().SetByName("u_In", 1);
         glEnable(GL_DEPTH_TEST);
@@ -177,8 +187,36 @@ namespace VCX::Apps::VolumeFX {
         _densitySrc = 1 - _densitySrc;
     }
 
+    void App::injectDensityField() {
+        if (_densityTex[0] == 0) {
+            return;
+        }
+
+        auto const useProgram = _injectProgram.Use();
+        auto & uniforms = _injectProgram.GetUniforms();
+        uniforms.SetByName("u_Size", _gridSize);
+        float const audioLevel = glm::clamp(_currentAudioLevel, 0.0f, 1.5f);
+        float const levelBoost = _autoGainEnabled ? glm::clamp(0.5f + 1.5f * audioLevel, 0.5f, 2.5f) : 1.0f;
+        float const frameScale = glm::clamp(Engine::GetDeltaTime() * 60.0f, 0.25f, 3.0f);
+        uniforms.SetByName("u_EmitStrength", _emitStrength * _visualizationGain * levelBoost * frameScale);
+        uniforms.SetByName("u_Sigma", _emitSigma);
+        uniforms.SetByName("u_EmitterRadius", _emitterRadius);
+        uniforms.SetByName("u_Time", _mockPlaybackTime);
+        uniforms.SetByName("u_Emitters", std::min(_emitterCount, 4));
+
+        glBindImageTexture(0, densityReadTexture(), 0, GL_TRUE, 0, GL_READ_WRITE, GL_R16F);
+
+        GLuint const groupsX = static_cast<GLuint>((_gridSize.x + 7) / 8);
+        GLuint const groupsY = static_cast<GLuint>((_gridSize.y + 7) / 8);
+        GLuint const groupsZ = static_cast<GLuint>((_gridSize.z + 7) / 8);
+        glDispatchCompute(groupsX, groupsY, groupsZ);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+    }
+
     void App::OnFrame() {
         updateCamera();
+        updateAudioReactivity();
+        injectDensityField();
         decayDensityField();
 
         glEnable(GL_DEPTH_TEST);
@@ -210,6 +248,236 @@ namespace VCX::Apps::VolumeFX {
         if (_autoRotate && ! _isOrbiting) {
             _orbitAngles.x += Engine::GetDeltaTime() * 0.15f;
         }
+    }
+
+    void App::updateAudioReactivity() {
+        _baseGain = std::clamp(_baseGain, 0.1f, 4.0f);
+
+        float const deltaTime = Engine::GetDeltaTime();
+        _mockPlaybackTime += deltaTime;
+        if (_audioLoaded && _audioDuration > 0.0f) {
+            if (_audioLoopPlayback) {
+                _mockPlaybackTime = std::fmod(_mockPlaybackTime, _audioDuration);
+            } else {
+                _mockPlaybackTime = std::min(_mockPlaybackTime, _audioDuration);
+            }
+        }
+
+        bool const haveAudio = _audioLoaded && !_audioEnvelope.empty() && _audioSampleRate > 0.0f;
+        float modulation = 0.0f;
+        if (haveAudio) {
+            modulation = sampleAudioEnvelope(_mockPlaybackTime);
+        } else {
+            float const speed = glm::max(_autoGainSpeed, 0.0f);
+            _autoGainPhase += deltaTime * glm::max(0.1f, speed);
+            float const twoPi = glm::pi<float>() * 2.0f;
+            if (_autoGainPhase > twoPi) {
+                _autoGainPhase = std::fmod(_autoGainPhase, twoPi);
+            }
+            modulation = 0.5f * (std::sin(_autoGainPhase) + 1.0f);
+        }
+        _currentAudioLevel = modulation;
+
+        if (! _autoGainEnabled) {
+            _visualizationGain = _baseGain;
+            return;
+        }
+
+        float const depth = glm::clamp(_autoGainDepth, 0.0f, 2.0f);
+        float const scale = 1.0f + depth * modulation;
+        _visualizationGain = glm::clamp(_baseGain * scale, 0.05f, 8.0f);
+    }
+
+    float App::sampleAudioEnvelope(float t) const {
+        if (_audioEnvelope.empty() || _audioSampleRate <= 0.0f) {
+            return 0.0f;
+        }
+
+        float const duration = (_audioDuration > 0.0f) ? _audioDuration : static_cast<float>(_audioEnvelope.size()) / _audioSampleRate;
+        if (duration <= 0.0f) {
+            return 0.0f;
+        }
+
+        float const minTime = 0.0f;
+        float const maxTime = std::max(minTime, duration - (1.0f / _audioSampleRate));
+        float const clamped = std::clamp(t, minTime, maxTime);
+        float const samplePos = clamped * _audioSampleRate;
+        std::size_t const i0 = static_cast<std::size_t>(samplePos);
+        if (i0 >= _audioEnvelope.size() - 1) {
+            return _audioEnvelope.back();
+        }
+
+        float const frac = samplePos - static_cast<float>(i0);
+        return std::lerp(_audioEnvelope[i0], _audioEnvelope[i0 + 1], frac);
+    }
+
+    bool App::loadAudioFile(const char * path) {
+        if (path == nullptr || path[0] == '\0') {
+            _audioStatus = "Please provide a file path.";
+            return false;
+        }
+
+        _audioLoaded = false;
+        _audioEnvelope.clear();
+        _audioSampleRate = 0.0f;
+        _audioDuration = 0.0f;
+        _currentAudioLevel = 0.0f;
+        _mockPlaybackTime = 0.0f;
+
+        namespace fs = std::filesystem;
+        fs::path resolved = fs::u8path(path);
+        if (resolved.is_relative()) {
+            std::error_code ec;
+            resolved = fs::current_path(ec) / resolved;
+        }
+
+        std::ifstream file(resolved, std::ios::binary);
+        if (! file) {
+            _audioStatus = "Unable to open audio file.";
+            return false;
+        }
+
+        auto readBytes = [&](void * dst, std::size_t size) {
+            return static_cast<bool>(file.read(static_cast<char *>(dst), static_cast<std::streamsize>(size)));
+        };
+
+        char riff[4];
+        if (! readBytes(riff, 4) || std::strncmp(riff, "RIFF", 4) != 0) {
+            _audioStatus = "Invalid WAV: missing RIFF header.";
+            return false;
+        }
+
+        [[maybe_unused]] std::uint32_t riffSize = 0;
+        if (! readBytes(&riffSize, 4)) {
+            _audioStatus = "Invalid WAV: truncated size.";
+            return false;
+        }
+
+        char wave[4];
+        if (! readBytes(wave, 4) || std::strncmp(wave, "WAVE", 4) != 0) {
+            _audioStatus = "Invalid WAV: missing WAVE tag.";
+            return false;
+        }
+
+        struct ChunkHeader {
+            char          id[4];
+            std::uint32_t size;
+        };
+
+        struct FmtChunkData {
+            std::uint16_t audioFormat = 0;
+            std::uint16_t numChannels = 0;
+            std::uint32_t sampleRate = 0;
+            std::uint32_t byteRate = 0;
+            std::uint16_t blockAlign = 0;
+            std::uint16_t bitsPerSample = 0;
+        };
+
+        FmtChunkData fmt { };
+        bool fmtFound = false;
+        bool dataFound = false;
+        std::vector<char> audioData;
+
+        auto skipPadding = [&](std::uint32_t size) {
+            if ((size & 1u) != 0u) {
+                file.seekg(1, std::ios::cur);
+            }
+        };
+
+        ChunkHeader chunk { };
+        while (readBytes(&chunk, sizeof(chunk))) {
+            std::string chunkId(chunk.id, 4);
+            if (chunkId == "fmt ") {
+                std::vector<char> buffer(chunk.size);
+                if (! buffer.empty() && ! readBytes(buffer.data(), buffer.size())) {
+                    _audioStatus = "Invalid WAV: truncated fmt chunk.";
+                    return false;
+                }
+                if (chunk.size < 16) {
+                    _audioStatus = "Invalid WAV: fmt chunk too small.";
+                    return false;
+                }
+                std::size_t const bytesToCopy = std::min<std::size_t>(sizeof(FmtChunkData), buffer.size());
+                std::memcpy(&fmt, buffer.data(), bytesToCopy);
+                fmtFound = true;
+            } else if (chunkId == "data") {
+                audioData.resize(chunk.size);
+                if (! audioData.empty() && ! readBytes(audioData.data(), audioData.size())) {
+                    _audioStatus = "Invalid WAV: truncated data chunk.";
+                    return false;
+                }
+                dataFound = true;
+                break;
+            } else {
+                file.seekg(static_cast<std::streamoff>(chunk.size), std::ios::cur);
+            }
+
+            skipPadding(chunk.size);
+        }
+
+        if (! fmtFound || ! dataFound) {
+            _audioStatus = "Invalid WAV: missing fmt or data chunk.";
+            return false;
+        }
+
+        if (fmt.audioFormat != 1 || fmt.bitsPerSample != 16) {
+            _audioStatus = "Only PCM16 WAV files are supported.";
+            return false;
+        }
+
+        if (fmt.numChannels == 0 || fmt.blockAlign == 0 || fmt.sampleRate == 0) {
+            _audioStatus = "Invalid WAV: unsupported channel configuration.";
+            return false;
+        }
+
+        std::size_t const bytesPerSample = fmt.bitsPerSample / 8;
+        if (bytesPerSample == 0) {
+            _audioStatus = "Invalid WAV: zero bytes per sample.";
+            return false;
+        }
+
+        std::size_t const totalSamples = audioData.size() / bytesPerSample;
+        if (totalSamples == 0) {
+            _audioStatus = "Audio file contains no samples.";
+            return false;
+        }
+
+        std::size_t const frameCount = totalSamples / fmt.numChannels;
+        std::vector<float> envelope(frameCount);
+        auto const * pcm = reinterpret_cast<std::int16_t const *>(audioData.data());
+        double const norm = 1.0 / (32768.0 * static_cast<double>(fmt.numChannels));
+        float env = 0.0f;
+        float const attack = 0.35f;
+        float const release = 0.08f;
+
+        for (std::size_t frame = 0; frame < frameCount; ++frame) {
+            double accum = 0.0;
+            for (std::uint16_t ch = 0; ch < fmt.numChannels; ++ch) {
+                std::size_t idx = frame * fmt.numChannels + ch;
+                if (idx >= totalSamples) {
+                    break;
+                }
+                accum += static_cast<double>(pcm[idx]);
+            }
+            float mono = static_cast<float>(accum * norm);
+            float magnitude = std::abs(mono);
+            float const coeff = (magnitude > env) ? attack : release;
+            env = std::lerp(env, magnitude, coeff);
+            envelope[frame] = env;
+        }
+
+        _audioEnvelope = std::move(envelope);
+        _audioSampleRate = static_cast<float>(fmt.sampleRate);
+        _audioDuration = (_audioSampleRate > 0.0f) ? static_cast<float>(_audioEnvelope.size()) / _audioSampleRate : 0.0f;
+        _audioLoaded = true;
+        _currentAudioLevel = 0.0f;
+        _mockPlaybackTime = 0.0f;
+
+        std::ostringstream oss;
+        oss << "Loaded WAV (" << fmt.numChannels << " ch, " << fmt.sampleRate << " Hz, "
+            << std::fixed << std::setprecision(2) << _audioDuration << " s)";
+        _audioStatus = oss.str();
+        return true;
     }
 
     glm::vec3 App::cameraPosition() const {
@@ -253,18 +521,13 @@ namespace VCX::Apps::VolumeFX {
     }
 
     void App::renderUI() {
-        if (_audioStatus.rfind("Loaded", 0) == 0) {
-            _mockPlaybackTime += Engine::GetDeltaTime();
-        }
-
         ImGui::SetNextWindowSizeConstraints({ 360, 0 }, { 600, FLT_MAX });
         ImGui::Begin("Audio Input");
         ImGui::TextWrapped("Stream any audio source to drive volume rendering parameters later.");
         ImGui::InputText("Source file", _audioPathBuffer.data(), _audioPathBuffer.size());
         if (ImGui::Button("Load audio")) {
             if (_audioPathBuffer[0] != '\0') {
-                _audioStatus = std::string("Loaded (stub): ") + _audioPathBuffer.data();
-                _mockPlaybackTime = 0.0f;
+                loadAudioFile(_audioPathBuffer.data());
             } else {
                 _audioStatus = "Please provide a file path.";
             }
@@ -273,12 +536,32 @@ namespace VCX::Apps::VolumeFX {
         if (ImGui::Button("Clear")) {
             _audioPathBuffer.fill('\0');
             _audioStatus = "No audio loaded.";
+            _audioEnvelope.clear();
+            _audioLoaded = false;
+            _audioSampleRate = 0.0f;
+            _audioDuration = 0.0f;
+            _currentAudioLevel = 0.0f;
             _mockPlaybackTime = 0.0f;
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Re-seed volume")) {
+            initDensityTextures();
+        }
+        ImGui::Checkbox("Loop playback", &_audioLoopPlayback);
+        float const playbackRatio = (_audioDuration > 0.0f) ? std::clamp(_mockPlaybackTime / _audioDuration, 0.0f, 1.0f) : 0.0f;
+        ImGui::ProgressBar(playbackRatio, ImVec2(-1.0f, 0.0f));
+        ImGui::Text("Playback: %.2f / %.2f s", _mockPlaybackTime, _audioDuration);
+        ImGui::Text("Audio level: %.2f", _currentAudioLevel);
 
-        ImGui::SliderFloat("Gain", &_visualizationGain, 0.1f, 4.0f, "%.2f");
+        ImGui::Separator();
+        ImGui::SliderFloat("Base gain", &_baseGain, 0.1f, 4.0f, "%.2f");
+        ImGui::Checkbox("React to audio", &_autoGainEnabled);
+        ImGui::BeginDisabled(! _autoGainEnabled);
+        ImGui::SliderFloat("Mod depth", &_autoGainDepth, 0.0f, 2.0f, "%.2f");
+        ImGui::SliderFloat("Fallback speed", &_autoGainSpeed, 0.1f, 5.0f, "%.2f");
+        ImGui::EndDisabled();
+        ImGui::Text("Live gain: %.2f", _visualizationGain);
         ImGui::TextWrapped("Status: %s", _audioStatus.c_str());
-        ImGui::Text("Playback (mock): %.2f s", _mockPlaybackTime);
         ImGui::End();
 
         ImGui::SetNextWindowSizeConstraints({ 260, 0 }, { 480, FLT_MAX });
@@ -286,9 +569,13 @@ namespace VCX::Apps::VolumeFX {
         ImGui::Checkbox("Auto rotate", &_autoRotate);
         ImGui::SliderFloat("Camera distance", &_cameraDistance, 1.2f, 14.0f);
         ImGui::TextUnformatted("Right-drag to orbit, scroll to zoom.");
-        ImGui::Text("Gain feeds renderer scale (stub): %.2f", _visualizationGain);
+        ImGui::Text("Gain feeds renderer scale: %.2f", _visualizationGain);
         ImGui::SliderFloat("Density thresh", &_densityThreshold, 0.0f, 0.2f, "%.3f");
         ImGui::SliderFloat("Dissipation", &_dissipation, 0.5f, 1.0f, "%.4f");
+        ImGui::SliderFloat("Emit strength", &_emitStrength, 0.0f, 2.0f, "%.2f");
+        ImGui::SliderFloat("Emit sigma", &_emitSigma, 0.01f, 0.3f, "%.3f");
+        ImGui::SliderFloat("Emitter radius", &_emitterRadius, 0.0f, 0.45f, "%.3f");
+        ImGui::SliderInt("Emitter count", &_emitterCount, 1, 4);
         ImGui::End();
     }
 } // namespace VCX::Apps::VolumeFX
