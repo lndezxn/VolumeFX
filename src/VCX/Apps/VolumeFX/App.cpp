@@ -11,6 +11,7 @@
 namespace VCX::Apps::VolumeFX {
     App::App() {
         glEnable(GL_DEPTH_TEST);
+        _sim.init(64, 64, 64);
     }
 
     App::~App() = default;
@@ -21,19 +22,13 @@ namespace VCX::Apps::VolumeFX {
         _camera.Update(ImGui::GetIO(), deltaTime);
         _audio.Update(deltaTime);
 
-        _density.Inject(
-            _audio.CurrentLevel(),
-            _audio.VisualizationGain(),
-            deltaTime,
-            _audio.PlaybackTime(),
-            _audio.AutoGainEnabled());
-        _density.Decay();
+        _sim.step(deltaTime, _audio.PlaybackTime(), _audio.VisualizationGain());
 
         glEnable(GL_DEPTH_TEST);
         glClearColor(0.05f, 0.07f, 0.10f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        _renderer.Render(_density, _camera, _audio.VisualizationGain(), _densityThreshold);
+        _renderer.Render(_sim.densityTex(), _camera, _audio.VisualizationGain(), _densityThreshold);
         renderUI();
     }
 
@@ -61,7 +56,7 @@ namespace VCX::Apps::VolumeFX {
         }
         ImGui::SameLine();
         if (ImGui::Button("Re-seed volume")) {
-            _density.Reset();
+            _sim.init(64, 64, 64);
         }
 
         bool loopPlayback = _audio.LoopEnabled();
@@ -111,27 +106,6 @@ namespace VCX::Apps::VolumeFX {
         ImGui::TextUnformatted("Right-drag to orbit, scroll to zoom.");
         ImGui::Text("Gain feeds renderer scale: %.2f", _audio.VisualizationGain());
         ImGui::SliderFloat("Density thresh", &_densityThreshold, 0.0f, 0.2f, "%.3f");
-
-        float dissipation = _density.Dissipation();
-        if (ImGui::SliderFloat("Dissipation", &dissipation, 0.5f, 1.0f, "%.4f")) {
-            _density.SetDissipation(dissipation);
-        }
-        float emitStrength = _density.EmitStrength();
-        if (ImGui::SliderFloat("Emit strength", &emitStrength, 0.0f, 2.0f, "%.2f")) {
-            _density.SetEmitStrength(emitStrength);
-        }
-        float emitSigma = _density.EmitSigma();
-        if (ImGui::SliderFloat("Emit sigma", &emitSigma, 0.01f, 0.3f, "%.3f")) {
-            _density.SetEmitSigma(emitSigma);
-        }
-        float emitterRadius = _density.EmitterRadius();
-        if (ImGui::SliderFloat("Emitter radius", &emitterRadius, 0.0f, 0.45f, "%.3f")) {
-            _density.SetEmitterRadius(emitterRadius);
-        }
-        int emitterCount = _density.EmitterCount();
-        if (ImGui::SliderInt("Emitter count", &emitterCount, 1, 4)) {
-            _density.SetEmitterCount(emitterCount);
-        }
         ImGui::End();
     }
 } // namespace VCX::Apps::VolumeFX

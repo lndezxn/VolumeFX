@@ -1,5 +1,6 @@
 #pragma once
 
+#include <glad/glad.h>
 #include <glm/glm.hpp>
 
 #include "Engine/GL/Program.h"
@@ -13,7 +14,7 @@ namespace VCX::Apps::VolumeFX {
     public:
         VolumeRenderer();
 
-        void Render(const DensityField & density, const OrbitCamera & camera, float visualizationGain, float densityThreshold);
+        void Render(GLuint densityTex, const OrbitCamera & camera, float visualizationGain, float densityThreshold);
 
         struct Vertex {
             glm::vec3 Position;

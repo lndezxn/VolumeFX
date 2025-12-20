@@ -11,7 +11,6 @@
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/ext/matrix_transform.hpp>
 
-#include "Apps/VolumeFX/DensityField.h"
 #include "Apps/VolumeFX/OrbitCamera.h"
 #include "Engine/app.h"
 #include "Engine/prelude.hpp"
@@ -56,7 +55,7 @@ namespace VCX::Apps::VolumeFX {
         _program.GetUniforms().SetByName("u_DensityTex", 0);
     }
 
-    void VolumeRenderer::Render(const DensityField & density, const OrbitCamera & camera, float visualizationGain, float densityThreshold) {
+    void VolumeRenderer::Render(GLuint densityTex, const OrbitCamera & camera, float visualizationGain, float densityThreshold) {
         auto const [frameW, frameH] = Engine::GetCurrentFrameSize();
         float const aspect = frameH == 0 ? 1.0f : static_cast<float>(frameW) / static_cast<float>(frameH);
 
@@ -80,9 +79,9 @@ namespace VCX::Apps::VolumeFX {
         uniforms.SetByName("u_BoxMin", boxMin);
         uniforms.SetByName("u_BoxMax", boxMax);
 
-        if (density.ReadTexture() != 0) {
+        if (densityTex != 0) {
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_3D, density.ReadTexture());
+            glBindTexture(GL_TEXTURE_3D, densityTex);
         }
         _cube.Draw({ _program.Use() });
     }

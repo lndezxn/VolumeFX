@@ -3,8 +3,8 @@
 #include <array>
 
 #include "Apps/VolumeFX/AudioInput.h"
-#include "Apps/VolumeFX/DensityField.h"
 #include "Apps/VolumeFX/OrbitCamera.h"
+#include "Apps/VolumeFX/VolumeSim.h"
 #include "Apps/VolumeFX/VolumeRenderer.h"
 #include "Engine/app.h"
 
@@ -22,8 +22,8 @@ namespace VCX::Apps::VolumeFX {
         void drawScenePanel();
 
         AudioInput     _audio;
-        DensityField   _density;
         OrbitCamera    _camera;
+        VolumeSim      _sim;
         VolumeRenderer _renderer;
 
         std::array<char, 512> _audioPathBuffer { };

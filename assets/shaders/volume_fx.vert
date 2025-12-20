@@ -1,4 +1,4 @@
-#version 410 core
+#version 430 core
 
 out vec3 v_Color;
 layout(location = 0) in vec3 a_Position;
