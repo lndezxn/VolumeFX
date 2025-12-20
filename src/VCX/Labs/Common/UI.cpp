@@ -229,9 +229,9 @@ namespace VCX::Labs::Common {
         
         ImGui::GetIO().Fonts->Clear();
         float const fontSize = std::floor(ImGuiGetDefaultFontSize() * _scaleUI);
-        for (auto const & fontPath : ImGuiGetDefaultFontFileNames()) {
-            assert(*(fontPath.cend()) == '\0');
-            ImGui::GetIO().Fonts->AddFontFromFileTTF(fontPath.data(), fontSize);
+        for (auto const & fontPathView : ImGuiGetDefaultFontFileNames()) {
+            auto const fontPath = std::string(fontPathView);
+            ImGui::GetIO().Fonts->AddFontFromFileTTF(fontPath.c_str(), fontSize);
         }
         
         ImGui_ImplOpenGL3_CreateFontsTexture();

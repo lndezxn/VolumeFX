@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cstdlib>
+#include <string>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -105,11 +106,11 @@ namespace VCX::Engine::Internal {
 
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
-        assert(*(options.Title.cend()) == '\0');
+        auto const windowTitle = std::string(options.Title);
         g_glfwWindow = glfwCreateWindow(
             options.WindowSize.first,
             options.WindowSize.second,
-            options.Title.data(),
+            windowTitle.c_str(),
             nullptr,
             nullptr);
         if (g_glfwWindow) {
@@ -142,8 +143,8 @@ namespace VCX::Engine::Internal {
         for (std::size_t i = 0; i < iconsCount; ++i) {
             auto const & iconFileName { options.IconFileNames[i] };
             auto &       icon { icons[i] };
-            assert(*(iconFileName.cend()) == '\0');
-            icon.pixels = stbi_load(iconFileName.data(), &icon.width, &icon.height, nullptr, 4);
+            auto const   iconPath = std::string(iconFileName);
+            icon.pixels = stbi_load(iconPath.c_str(), &icon.width, &icon.height, nullptr, 4);
         }
         glfwSetWindowIcon(
             g_glfwWindow,
@@ -167,8 +168,8 @@ namespace VCX::Engine::Internal {
     static void RunApp_InitImGui(AppContextOptions const & options) {
         ImGui::CreateContext();
         for (auto const & fontFileName : options.FontFileNames) {
-            assert(*(fontFileName.cend()) == '\0');
-            ImGui::GetIO().Fonts->AddFontFromFileTTF(fontFileName.data(), options.FontSize);
+            auto const fontPath = std::string(fontFileName);
+            ImGui::GetIO().Fonts->AddFontFromFileTTF(fontPath.c_str(), options.FontSize);
         }
         ImGui::GetIO().IniFilename = nullptr;
         ImGui::GetIO().LogFilename = nullptr;
