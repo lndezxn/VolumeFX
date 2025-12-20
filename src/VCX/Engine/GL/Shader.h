@@ -12,6 +12,7 @@ namespace VCX::Engine::GL {
         TessEvaluation = GL_TESS_EVALUATION_SHADER,
         Geometry       = GL_GEOMETRY_SHADER,
         Fragment       = GL_FRAGMENT_SHADER,
+        Compute        = GL_COMPUTE_SHADER,
     };
 
     struct ShaderTrait {

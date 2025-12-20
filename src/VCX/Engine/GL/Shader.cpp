@@ -35,6 +35,7 @@ namespace VCX::Engine::GL {
         else if (ext == ".tese") return ShaderType::TessEvaluation;
         else if (ext == ".geom") return ShaderType::Geometry;
         else if (ext == ".frag") return ShaderType::Fragment;
+        else if (ext == ".comp") return ShaderType::Compute;
         else {
             spdlog::error("VCX::Engine::GL::ShaderTypeFromExtension({}): undetermined shader type.", ext.string());
             std::exit(EXIT_FAILURE);
