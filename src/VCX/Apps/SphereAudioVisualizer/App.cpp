@@ -1,19 +1,40 @@
 #include "Apps/SphereAudioVisualizer/App.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <filesystem>
 #include <mutex>
 #include <vector>
 
+#include <glad/glad.h>
+#include <glm/glm.hpp>
 #include <imgui.h>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include "Assets/bundled.h"
+#include "Engine/app.h"
+#include "Engine/math.hpp"
 
 namespace VCX::Apps::SphereAudioVisualizer {
     namespace {
+        constexpr auto kFullScreenTriangle = std::array<float, 6> {
+            -1.f, -1.f,
+             3.f, -1.f,
+            -1.f,  3.f,
+        };
+
+        constexpr glm::vec3 kVolumeMin { -1.f };
+        constexpr glm::vec3 kVolumeMax {  1.f };
+
+        struct StatsData {
+            uint32_t Steps     = 0;
+            uint32_t Rays      = 0;
+            uint32_t EarlyExit = 0;
+        };
+
         std::filesystem::path ResolveLogPath() {
             auto path = std::filesystem::path("logs") / "spherevis.log";
             if (auto parent = path.parent_path(); ! parent.empty()) {
@@ -59,13 +80,131 @@ namespace VCX::Apps::SphereAudioVisualizer {
         SetupLogger();
     }
 
-    App::App(): _alpha(0.5f) {
+    App::App():
+        _alpha(0.5f),
+        _volumeProgram({
+            VCX::Engine::GL::SharedShader("assets/shaders/spherevis_volume.vert"),
+            VCX::Engine::GL::SharedShader("assets/shaders/spherevis_volume.frag"),
+        }) {
         SetupLogger();
         spdlog::debug("SphereAudioVisualizer initialized.");
+
+        {
+            auto const vaoUse = _fullscreenVAO.Use();
+            auto const vboUse = _fullscreenVBO.Use();
+            glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(kFullScreenTriangle.size() * sizeof(float)), kFullScreenTriangle.data(), GL_STATIC_DRAW);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+        }
+
+        glGenBuffers(1, &_statsBuffer);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, _statsBuffer);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(StatsData), nullptr, GL_DYNAMIC_COPY);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        ResetStatsBuffer();
+
+        _volumeProgram.GetUniforms().SetByName("uVolumeTexture", 0);
         _volumeData.Regenerate();
     }
 
+    App::~App() {
+        if (_statsBuffer) {
+            glDeleteBuffers(1, &_statsBuffer);
+            _statsBuffer = 0;
+        }
+    }
+
+    void App::ResetStatsBuffer() {
+        if (_statsBuffer == 0)
+            return;
+        StatsData zero {};
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, _statsBuffer);
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(StatsData), &zero);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    }
+
+    void App::RenderVolume(float deltaTime) {
+        auto const volumeSize = _volumeData.GetVolumeSize();
+        auto const volumeTex = _volumeData.GetVolumeTextureId();
+        auto const windowSize = VCX::Engine::GetCurrentWindowSize();
+        if (volumeSize == 0 || volumeTex == 0 || windowSize.first == 0 || windowSize.second == 0)
+            return;
+
+        ResetStatsBuffer();
+
+        auto const aspect = float(windowSize.first) / float(windowSize.second);
+        auto const view = _camera.GetViewMatrix();
+        auto const proj = _camera.GetProjectionMatrix(aspect);
+        auto const invViewProj = glm::inverse(proj * view);
+        auto const screenSize = glm::vec2(float(windowSize.first), float(windowSize.second));
+
+        auto & uniforms = _volumeProgram.GetUniforms();
+        uniforms.SetByName("uInvViewProj", invViewProj);
+        uniforms.SetByName("uCameraPos", _camera.Eye);
+        uniforms.SetByName("uScreenSize", screenSize);
+        uniforms.SetByName("uStepSize", _renderSettings.StepSize);
+        uniforms.SetByName("uMaxSteps", _renderSettings.MaxSteps);
+        uniforms.SetByName("uAlphaScale", _renderSettings.AlphaScale);
+        uniforms.SetByName("uColorMode", static_cast<int>(_renderSettings.Mode));
+        uniforms.SetByName("uEnableJitter", _renderSettings.EnableJitter ? 1 : 0);
+        uniforms.SetByName("uJitterSeed", static_cast<float>(_frameIndex));
+        uniforms.SetByName("uVolumeMin", kVolumeMin);
+        uniforms.SetByName("uVolumeMax", kVolumeMax);
+
+        if (_statsBuffer) {
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, _statsBuffer);
+        }
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_3D, volumeTex);
+
+        {
+            auto const progUse = _volumeProgram.Use();
+            auto const vaoUse = _fullscreenVAO.Use();
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+
+        glBindTexture(GL_TEXTURE_3D, 0);
+        if (_statsBuffer) {
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
+        }
+
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        if (_statsBuffer) {
+            StatsData stats {};
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, _statsBuffer);
+            glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(stats), &stats);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+            _accumulatedSteps += stats.Steps;
+            _accumulatedRays += stats.Rays;
+            _accumulatedEarly += stats.EarlyExit;
+        }
+
+        _statsTimer += deltaTime;
+        if (_statsTimer >= 1.f) {
+            if (_accumulatedRays > 0) {
+                _statsSnapshot.AvgSteps = float(_accumulatedSteps) / float(_accumulatedRays);
+                _statsSnapshot.EarlyExitRatio = float(_accumulatedEarly) / float(_accumulatedRays);
+            } else {
+                _statsSnapshot.AvgSteps = 0.f;
+                _statsSnapshot.EarlyExitRatio = 0.f;
+            }
+            spdlog::info("Raymarch avg steps {:.1f}, early exit ratio {:.1f}%", _statsSnapshot.AvgSteps, _statsSnapshot.EarlyExitRatio * 100.f);
+            _accumulatedSteps = 0;
+            _accumulatedRays = 0;
+            _accumulatedEarly = 0;
+            _statsTimer = 0.f;
+        }
+
+        ++_frameIndex;
+    }
+
     void App::OnFrame() {
+        float const deltaTime = VCX::Engine::GetDeltaTime();
+        _cameraManager.ProcessInput(_camera, ImGui::GetMousePos());
+        _cameraManager.Update(_camera);
+        RenderVolume(deltaTime);
+
         ImGui::Begin("Sphere Audio Visualizer");
         ImGui::Text("FPS: %.1f", CurrentFps());
         if (ImGui::Button("Reload Config")) {
@@ -75,8 +214,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         ImGui::Separator();
 
         auto settings = _volumeData.GetSettings();
-        bool       settingsChanged = false;
-        int        volumeSizeInput = static_cast<int>(settings.VolumeSize);
+        bool settingsChanged = false;
+        int volumeSizeInput = static_cast<int>(settings.VolumeSize);
         if (ImGui::InputInt("Volume Size", &volumeSizeInput)) {
             settings.VolumeSize = static_cast<std::size_t>(std::clamp(volumeSizeInput, 32, 256));
             settingsChanged = true;
@@ -100,16 +239,28 @@ namespace VCX::Apps::SphereAudioVisualizer {
             settingsChanged = true;
         }
 
-        bool requestRebuild = false;
         if (ImGui::Button("Regenerate")) {
-            requestRebuild = true;
+            settingsChanged = true;
         }
 
-        if (settingsChanged || requestRebuild) {
+        if (settingsChanged) {
             _volumeData.SetSettings(settings);
             _volumeData.Regenerate();
         }
 
+        ImGui::Separator();
+        ImGui::Text("Raymarch");
+        ImGui::SliderFloat("Step Size", &_renderSettings.StepSize, 0.001f, 0.1f);
+        ImGui::SliderInt("Max Steps", &_renderSettings.MaxSteps, 16, 512);
+        ImGui::SliderFloat("Alpha Scale", &_renderSettings.AlphaScale, 0.1f, 10.f);
+        ImGui::Checkbox("Enable Jitter", &_renderSettings.EnableJitter);
+        int mode = static_cast<int>(_renderSettings.Mode);
+        const char * colorModes[] = { "Grayscale", "Gradient" };
+        if (ImGui::Combo("Color Mode", &mode, colorModes, IM_ARRAYSIZE(colorModes))) {
+            _renderSettings.Mode = static_cast<ColorMode>(mode);
+        }
+
+        ImGui::Separator();
         auto const volumeSize = _volumeData.GetVolumeSize();
         if (volumeSize > 0) {
             int sliceIndex = static_cast<int>(_volumeData.GetSliceIndex());
@@ -126,6 +277,32 @@ namespace VCX::Apps::SphereAudioVisualizer {
                 ImVec2(0.f, 1.f),
                 ImVec2(1.f, 0.f));
         }
+
+        ImGui::Separator();
+        ImGui::Text("Camera Controls");
+        glm::vec3 cameraTarget = _camera.Target;
+        Engine::Spherical spherical(_camera.Eye - _camera.Target);
+        bool cameraChanged = false;
+        cameraChanged |= ImGui::DragFloat3("Target", &cameraTarget.x, 0.01f);
+        float distance = spherical.Radius;
+        cameraChanged |= ImGui::DragFloat("Distance", &distance, 0.01f, 0.01f, 100.f);
+        float azimuth = glm::degrees(spherical.Theta);
+        cameraChanged |= ImGui::SliderFloat("Azimuth", &azimuth, -180.f, 180.f);
+        float polar = glm::degrees(spherical.Phi);
+        cameraChanged |= ImGui::SliderFloat("Polar", &polar, 0.1f, 179.9f);
+        if (cameraChanged) {
+            _camera.Target = cameraTarget;
+            Engine::Spherical updated;
+            updated.Radius = std::max(0.01f, distance);
+            updated.Theta = glm::radians(azimuth);
+            updated.Phi = glm::radians(polar);
+            _camera.Eye = _camera.Target + updated.Vec();
+            _cameraManager.Save(_camera);
+            _cameraManager.Reset(_camera);
+        }
+
+        ImGui::Text("Avg steps: %.1f", _statsSnapshot.AvgSteps);
+        ImGui::Text("Early exit ratio: %.1f%%", _statsSnapshot.EarlyExitRatio * 100.f);
 
         ImGui::End();
     }
