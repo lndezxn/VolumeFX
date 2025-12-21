@@ -31,6 +31,9 @@ namespace VCX::Apps::VolumeFX {
         _sim.SetAdvectStrength(_advectStrength);
         _sim.SetDiffuseEnabled(_diffuseEnabled);
         _sim.SetDiffusionK(_diffuseK);
+        _sim.SetEmitStrength(_emitStrength);
+        _sim.SetSigma(_sigma);
+        _sim.SetDissipation(_dissipation);
 
         _sim.step(deltaTime, _audio.PlaybackTime(), _audio.VisualizationGain());
 
@@ -38,7 +41,7 @@ namespace VCX::Apps::VolumeFX {
         glClearColor(0.05f, 0.07f, 0.10f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        _renderer.Render(_sim.densityTex(), _camera, _audio.VisualizationGain(), _densityThreshold, _showBoundingBox);
+        _renderer.Render(_sim.densityTex(), _camera, _densityScale, _densityThreshold, _showBoundingBox);
         renderUI();
     }
 
@@ -119,11 +122,15 @@ namespace VCX::Apps::VolumeFX {
         ImGui::Checkbox("Show bounding box", &_showBoundingBox);
         ImGui::Separator();
         ImGui::TextUnformatted("Fluid parameters");
+        ImGui::SliderFloat("Density scale", &_densityScale, 0.1f, 4.0f, "%.2f");
         ImGui::SliderFloat("Force strength", &_forceStrength, 0.0f, 20.0f, "%.2f");
         ImGui::SliderFloat("Force sigma", &_forceSigma, 0.02f, 0.30f, "%.3f");
         ImGui::SliderFloat("Velocity damp", &_velDamp, 0.90f, 0.9995f, "%.4f");
         ImGui::SliderInt("Jacobi iters", &_jacobiIters, 1, 120);
-        ImGui::SliderFloat("Density advect x", &_advectStrength, 0.5f, 6.0f, "%.2f");
+        ImGui::SliderFloat("Advect strength", &_advectStrength, 0.5f, 8.0f, "%.2f");
+        ImGui::SliderFloat("Emit strength", &_emitStrength, 0.0f, 10.0f, "%.2f");
+        ImGui::SliderFloat("Emit sigma", &_sigma, 0.01f, 0.6f, "%.3f");
+        ImGui::SliderFloat("Dissipation", &_dissipation, 0.90f, 0.9999f, "%.4f");
         ImGui::Checkbox("Diffuse (feather edges)", &_diffuseEnabled);
         ImGui::BeginDisabled(! _diffuseEnabled);
         if (ImGui::SliderFloat("Diffuse k", &_diffuseK, 0.0f, 0.15f, "%.3f")) {

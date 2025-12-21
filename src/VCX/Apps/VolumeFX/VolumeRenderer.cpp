@@ -61,7 +61,7 @@ namespace VCX::Apps::VolumeFX {
         _boxProgram.GetUniforms().SetByName("u_DensityTex", 0);
     }
 
-    void VolumeRenderer::Render(GLuint densityTex, const OrbitCamera & camera, float visualizationGain, float densityThreshold, bool showBoundingBox) {
+    void VolumeRenderer::Render(GLuint densityTex, const OrbitCamera & camera, float densityScale, float densityThreshold, bool showBoundingBox) {
         auto const [frameW, frameH] = Engine::GetCurrentFrameSize();
         float const aspect = frameH == 0 ? 1.0f : static_cast<float>(frameW) / static_cast<float>(frameH);
 
@@ -80,7 +80,7 @@ namespace VCX::Apps::VolumeFX {
         uniforms.SetByName("u_ViewProj", projection * view);
         uniforms.SetByName("u_CameraPos", camPos);
         uniforms.SetByName("u_StepCount", static_cast<std::int32_t>(_raymarchSteps));
-        uniforms.SetByName("u_DensityScale", visualizationGain);
+        uniforms.SetByName("u_DensityScale", densityScale);
         uniforms.SetByName("u_Thresh", densityThreshold);
         uniforms.SetByName("u_BoxMin", boxMin);
         uniforms.SetByName("u_BoxMax", boxMax);

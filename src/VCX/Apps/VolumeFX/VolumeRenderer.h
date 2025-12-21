@@ -14,7 +14,7 @@ namespace VCX::Apps::VolumeFX {
     public:
         VolumeRenderer();
 
-        void Render(GLuint densityTex, const OrbitCamera & camera, float visualizationGain, float densityThreshold, bool showBoundingBox);
+        void Render(GLuint densityTex, const OrbitCamera & camera, float densityScale, float densityThreshold, bool showBoundingBox);
 
         struct Vertex {
             glm::vec3 Position;

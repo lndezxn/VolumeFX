@@ -415,4 +415,28 @@ namespace VCX::Apps::VolumeFX {
     float VolumeSim::AdvectStrength() const {
         return _advectStrength;
     }
+
+    void VolumeSim::SetEmitStrength(float v) {
+        _emitStrength = std::max(0.0f, v);
+    }
+
+    float VolumeSim::EmitStrength() const {
+        return _emitStrength;
+    }
+
+    void VolumeSim::SetSigma(float v) {
+        _sigma = std::clamp(v, 0.01f, 1.0f);
+    }
+
+    float VolumeSim::Sigma() const {
+        return _sigma;
+    }
+
+    void VolumeSim::SetDissipation(float v) {
+        _dissipation = std::clamp(v, 0.90f, 1.0f);
+    }
+
+    float VolumeSim::Dissipation() const {
+        return _dissipation;
+    }
 } // namespace VCX::Apps::VolumeFX

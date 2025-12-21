@@ -31,6 +31,13 @@ namespace VCX::Apps::VolumeFX {
         void SetAdvectStrength(float v);
         float AdvectStrength() const;
 
+        void SetEmitStrength(float v);
+        float EmitStrength() const;
+        void SetSigma(float v);
+        float Sigma() const;
+        void SetDissipation(float v);
+        float Dissipation() const;
+
         GLuint densityTex() const;
 
     private:

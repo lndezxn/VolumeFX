@@ -38,5 +38,11 @@ namespace VCX::Apps::VolumeFX {
         float                  _velDamp = 0.995f;
         int                    _jacobiIters = 45;
         float                  _advectStrength = 3.0f;
+
+        float                  _emitStrength = 3.0f;
+        float                  _sigma = 0.12f;
+        float                  _dissipation = 0.995f;
+
+        float                  _densityScale = 1.0f;
     };
 } // namespace VCX::Apps::VolumeFX
