@@ -1,0 +1,80 @@
+#version 430
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(binding = 0) uniform sampler3D u_In;
+layout(r16f, binding = 0) uniform writeonly image3D u_Out;
+
+uniform ivec3 u_Size;
+uniform float u_Time;
+uniform float u_Dt;
+uniform float u_AdvectStrength;
+uniform float u_Swirl;
+uniform float u_Up;
+uniform float u_NoiseStrength;
+uniform float u_NoiseFreq;
+
+float hash11(float x) {
+    return fract(sin(x * 17.0) * 43758.5453);
+}
+
+float hash13(vec3 p) {
+    return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+}
+
+float valueNoise3(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    // smoothstep for interpolation
+    vec3 u = f * f * (3.0 - 2.0 * f);
+
+    float n000 = hash13(i + vec3(0.0, 0.0, 0.0));
+    float n100 = hash13(i + vec3(1.0, 0.0, 0.0));
+    float n010 = hash13(i + vec3(0.0, 1.0, 0.0));
+    float n110 = hash13(i + vec3(1.0, 1.0, 0.0));
+    float n001 = hash13(i + vec3(0.0, 0.0, 1.0));
+    float n101 = hash13(i + vec3(1.0, 0.0, 1.0));
+    float n011 = hash13(i + vec3(0.0, 1.0, 1.0));
+    float n111 = hash13(i + vec3(1.0, 1.0, 1.0));
+
+    float nx00 = mix(n000, n100, u.x);
+    float nx10 = mix(n010, n110, u.x);
+    float nx01 = mix(n001, n101, u.x);
+    float nx11 = mix(n011, n111, u.x);
+
+    float nxy0 = mix(nx00, nx10, u.y);
+    float nxy1 = mix(nx01, nx11, u.y);
+
+    return mix(nxy0, nxy1, u.z) * 2.0 - 1.0; // range [-1, 1]
+}
+
+void main() {
+    ivec3 id = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(id, u_Size))) {
+        return;
+    }
+
+    vec3 sizef = vec3(u_Size);
+    vec3 uv = (vec3(id) + 0.5) / sizef;
+
+    // Build velocity field in uv-space per second
+    vec3 c = uv - 0.5;
+    vec3 swirl = vec3(-c.z, 0.0, c.x) * u_Swirl;
+    vec3 up = vec3(0.0, u_Up, 0.0);
+
+    float timeOffset = u_Time * 0.37;
+    vec3 noiseP = uv * u_NoiseFreq + timeOffset;
+    float n = valueNoise3(noiseP);
+    // Slightly bias noise with y to avoid flat slices
+    n = mix(n, valueNoise3(noiseP + vec3(0.0, uv.y * 2.1, 0.0)), 0.5);
+    vec3 noise = vec3(n, n, n);
+
+    vec3 v = swirl + up + noise * u_NoiseStrength;
+
+    float dt = u_Dt * u_AdvectStrength;
+    vec3 prev = uv - dt * v;
+    prev = clamp(prev, vec3(0.0), vec3(1.0));
+
+    float d = texture(u_In, prev).r;
+    imageStore(u_Out, id, vec4(d, 0.0, 0.0, 1.0));
+}

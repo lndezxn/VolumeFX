@@ -10,8 +10,10 @@ namespace VCX::Apps::VolumeFX {
     }
 
     VolumeSim::VolumeSim() :
-        _injectProgram(Engine::GL::UniqueProgram({ Engine::GL::SharedShader("assets/shaders/compute/density_inject.comp") })) {
+        _injectProgram(Engine::GL::UniqueProgram({ Engine::GL::SharedShader("assets/shaders/compute/density_inject.comp") })),
+        _advectProgram(Engine::GL::UniqueProgram({ Engine::GL::SharedShader("assets/shaders/compute/density_advect.comp") })) {
         _injectProgram.GetUniforms().SetByName("u_In", 0);
+        _advectProgram.GetUniforms().SetByName("u_In", 0);
     }
 
     VolumeSim::~VolumeSim() {
@@ -89,35 +91,65 @@ namespace VCX::Apps::VolumeFX {
             return;
         }
 
-        auto & uniforms = _injectProgram.GetUniforms();
-        uniforms.SetByName("u_Size", glm::ivec3(_size[0], _size[1], _size[2]));
-        uniforms.SetByName("u_Time", time);
-        uniforms.SetByName("u_Dt", dt);
-        uniforms.SetByName("u_AudioGain", audioGain);
-        uniforms.SetByName("u_EmitStrength", _emitStrength);
-        uniforms.SetByName("u_Sigma", _sigma);
-        uniforms.SetByName("u_Dissipation", _dissipation);
-
-        GLuint readTex = _density[_src];
-        GLuint writeTex = _density[1 - _src];
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_3D, readTex);
-
-        glBindImageTexture(0, writeTex, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R16F);
+        // 1) Inject / dissipate
+        auto & injectUniforms = _injectProgram.GetUniforms();
+        injectUniforms.SetByName("u_Size", glm::ivec3(_size[0], _size[1], _size[2]));
+        injectUniforms.SetByName("u_Time", time);
+        injectUniforms.SetByName("u_Dt", dt);
+        injectUniforms.SetByName("u_AudioGain", audioGain);
+        injectUniforms.SetByName("u_EmitStrength", _emitStrength);
+        injectUniforms.SetByName("u_Sigma", _sigma);
+        injectUniforms.SetByName("u_Dissipation", _dissipation);
 
         auto divUp = [](int v) { return (v + 7) / 8; };
         GLuint groupsX = static_cast<GLuint>(divUp(_size[0]));
         GLuint groupsY = static_cast<GLuint>(divUp(_size[1]));
         GLuint groupsZ = static_cast<GLuint>(divUp(_size[2]));
-        auto const useProgram = _injectProgram.Use(); // ensure program is bound for dispatch
-        glDispatchCompute(groupsX, groupsY, groupsZ);
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
 
-        glBindTexture(GL_TEXTURE_3D, 0);
-        glActiveTexture(GL_TEXTURE0);
+        {
+            GLuint readTex = _density[_src];
+            GLuint writeTex = _density[1 - _src];
 
-        _src = 1 - _src;
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_3D, readTex);
+            glBindImageTexture(0, writeTex, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R16F);
+
+            auto const useProgram = _injectProgram.Use();
+            glDispatchCompute(groupsX, groupsY, groupsZ);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+
+            glBindTexture(GL_TEXTURE_3D, 0);
+            glActiveTexture(GL_TEXTURE0);
+            _src = 1 - _src;
+        }
+
+        // 2) Advect to create trailing swirl
+        auto & advectUniforms = _advectProgram.GetUniforms();
+        advectUniforms.SetByName("u_Size", glm::ivec3(_size[0], _size[1], _size[2]));
+        advectUniforms.SetByName("u_Time", time);
+        advectUniforms.SetByName("u_Dt", dt);
+        advectUniforms.SetByName("u_AdvectStrength", _advectStrength);
+        advectUniforms.SetByName("u_Swirl", _swirl);
+        advectUniforms.SetByName("u_Up", _up);
+        advectUniforms.SetByName("u_NoiseStrength", _noiseStrength);
+        advectUniforms.SetByName("u_NoiseFreq", _noiseFreq);
+
+        {
+            GLuint readTex = _density[_src];
+            GLuint writeTex = _density[1 - _src];
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_3D, readTex);
+            glBindImageTexture(0, writeTex, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R16F);
+
+            auto const useProgram = _advectProgram.Use();
+            glDispatchCompute(groupsX, groupsY, groupsZ);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+
+            glBindTexture(GL_TEXTURE_3D, 0);
+            glActiveTexture(GL_TEXTURE0);
+            _src = 1 - _src;
+        }
     }
 
     GLuint VolumeSim::densityTex() const {

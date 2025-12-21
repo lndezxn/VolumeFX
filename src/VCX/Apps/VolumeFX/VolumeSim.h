@@ -22,6 +22,7 @@ namespace VCX::Apps::VolumeFX {
         void createTexture(GLuint tex, int sx, int sy, int sz) const;
 
         Engine::GL::UniqueProgram _injectProgram;
+        Engine::GL::UniqueProgram _advectProgram;
 
         std::array<GLuint, 2> _density { 0, 0 };
         std::array<int, 3>    _size { 0, 0, 0 };
@@ -31,5 +32,11 @@ namespace VCX::Apps::VolumeFX {
         float                 _emitStrength = 3.0f;
         float                 _sigma = 0.12f;
         float                 _dissipation = 0.995f;
+
+        float                 _advectStrength = 3.0f;
+        float                 _swirl = 1.1f;
+        float                 _up = 0.35f;
+        float                 _noiseStrength = 0.35f;
+        float                 _noiseFreq = 3.0f;
     };
 } // namespace VCX::Apps::VolumeFX
