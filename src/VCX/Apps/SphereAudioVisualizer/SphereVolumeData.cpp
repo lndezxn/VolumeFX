@@ -40,6 +40,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         settings.NumShells = std::clamp(settings.NumShells, kMinShells, kMaxShells);
         settings.Thickness = std::clamp(settings.Thickness, 0.02f, 0.5f);
         settings.GlobalGain = std::clamp(settings.GlobalGain, 0.1f, 5.f);
+        settings.StaticRippleAmp = std::clamp(settings.StaticRippleAmp, 0.f, 0.3f);
+        settings.StaticRippleFreq = std::clamp(settings.StaticRippleFreq, 0.1f, 60.f);
         _settings = settings;
     }
 
@@ -96,11 +98,13 @@ namespace VCX::Apps::SphereAudioVisualizer {
                 for (std::size_t x = 0; x < size; ++x) {
                     auto const xn = size > 1 ? -1.f + step * x : 0.f;
                     auto const radius = std::sqrt(xn * xn + yn * yn + zn * zn);
+                    auto const ripple = _settings.StaticRippleAmp * std::sin(_settings.StaticRippleFreq * radius);
+                    auto const radiusWithRipple = radius + ripple;
                     float density = 0.f;
                     for (int layer = 0; layer < shellCount; ++layer) {
                         auto const shellRadius = (float(layer) + 1.f) / (shellCount + 1.f);
                         auto const amplitude = ComputeShellAmplitude(layer, shellCount);
-                        auto const delta = (radius - shellRadius) / thickness;
+                        auto const delta = (radiusWithRipple - shellRadius) / thickness;
                         density += amplitude * std::exp(-delta * delta);
                     }
                     density = std::clamp(density * _settings.GlobalGain * 0.15f, 0.f, 1.f);

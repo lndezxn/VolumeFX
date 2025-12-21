@@ -5,6 +5,7 @@ layout(location = 0) out vec4 outColor;
 uniform mat4 uInvViewProj;
 uniform vec3 uCameraPos;
 uniform vec2 uScreenSize;
+uniform float uTime;
 uniform float uStepSize;
 uniform int uMaxSteps;
 uniform float uAlphaScale;
@@ -13,6 +14,12 @@ uniform int uEnableJitter;
 uniform float uJitterSeed;
 uniform vec3 uVolumeMin;
 uniform vec3 uVolumeMax;
+uniform float uNoiseStrength;
+uniform float uNoiseFreq;
+uniform float uNoiseSpeed;
+uniform float uRippleAmp;
+uniform float uRippleFreq;
+uniform float uRippleSpeed;
 layout(binding = 0) uniform sampler3D uVolumeTexture;
 
 layout(std430, binding = 0) buffer RayMarchStats {
@@ -27,6 +34,32 @@ float Hash(vec2 value) {
 
 float RandomJitter(vec2 coord, float seed) {
     return Hash(coord + seed);
+}
+
+float Hash3(vec3 value) {
+    return fract(sin(dot(value, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+}
+
+float Noise3(vec3 point) {
+    vec3 i = floor(point);
+    vec3 f = fract(point);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+    float n000 = Hash3(i + vec3(0.0));
+    float n100 = Hash3(i + vec3(1.0, 0.0, 0.0));
+    float n010 = Hash3(i + vec3(0.0, 1.0, 0.0));
+    float n110 = Hash3(i + vec3(1.0, 1.0, 0.0));
+    float n001 = Hash3(i + vec3(0.0, 0.0, 1.0));
+    float n101 = Hash3(i + vec3(1.0, 0.0, 1.0));
+    float n011 = Hash3(i + vec3(0.0, 1.0, 1.0));
+    float n111 = Hash3(i + vec3(1.0, 1.0, 1.0));
+
+    float nx00 = mix(n000, n100, u.x);
+    float nx10 = mix(n010, n110, u.x);
+    float nx01 = mix(n001, n101, u.x);
+    float nx11 = mix(n011, n111, u.x);
+    float nxy0 = mix(nx00, nx10, u.y);
+    float nxy1 = mix(nx01, nx11, u.y);
+    return mix(nxy0, nxy1, u.z);
 }
 
 void main() {
@@ -68,7 +101,15 @@ void main() {
         }
 
         vec3 samplePos = uCameraPos + rayDir * sampleT;
-        vec3 texCoord = (samplePos - uVolumeMin) / (uVolumeMax - uVolumeMin);
+        vec3 normalizedPos = samplePos;
+        float radialLen = length(normalizedPos);
+        vec3 radialDir = radialLen > 1e-5 ? normalizedPos / radialLen : vec3(0.0);
+        float noise = Noise3(normalizedPos * uNoiseFreq + vec3(uTime * uNoiseSpeed));
+        vec3 warpedPos = normalizedPos + radialDir * (uNoiseStrength * (noise * 2.0 - 1.0));
+        float ripple = uRippleAmp * sin(uRippleFreq * radialLen + uTime * uRippleSpeed);
+        warpedPos += radialDir * ripple;
+        warpedPos = clamp(warpedPos, uVolumeMin, uVolumeMax);
+        vec3 texCoord = (warpedPos - uVolumeMin) / (uVolumeMax - uVolumeMin);
         if (any(lessThan(texCoord, vec3(0.0))) || any(greaterThan(texCoord, vec3(1.0)))) {
             continue;
         }

@@ -123,6 +123,10 @@ namespace VCX::Apps::SphereAudioVisualizer {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
 
+    void App::LogDynamicParam(char const * name, float value) {
+        spdlog::info("{}={:.3f}", name, value);
+    }
+
     void App::RenderVolume(float deltaTime) {
         auto const volumeSize = _volumeData.GetVolumeSize();
         auto const volumeTex = _volumeData.GetVolumeTextureId();
@@ -131,6 +135,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
             return;
 
         ResetStatsBuffer();
+
+        _time += deltaTime;
 
         auto const aspect = float(windowSize.first) / float(windowSize.second);
         auto const view = _camera.GetViewMatrix();
@@ -142,6 +148,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         uniforms.SetByName("uInvViewProj", invViewProj);
         uniforms.SetByName("uCameraPos", _camera.Eye);
         uniforms.SetByName("uScreenSize", screenSize);
+        uniforms.SetByName("uTime", _time);
         uniforms.SetByName("uStepSize", _renderSettings.StepSize);
         uniforms.SetByName("uMaxSteps", _renderSettings.MaxSteps);
         uniforms.SetByName("uAlphaScale", _renderSettings.AlphaScale);
@@ -150,6 +157,12 @@ namespace VCX::Apps::SphereAudioVisualizer {
         uniforms.SetByName("uJitterSeed", static_cast<float>(_frameIndex));
         uniforms.SetByName("uVolumeMin", kVolumeMin);
         uniforms.SetByName("uVolumeMax", kVolumeMax);
+        uniforms.SetByName("uNoiseStrength", _dynamicSettings.NoiseStrength);
+        uniforms.SetByName("uNoiseFreq", _dynamicSettings.NoiseFreq);
+        uniforms.SetByName("uNoiseSpeed", _dynamicSettings.NoiseSpeed);
+        uniforms.SetByName("uRippleAmp", _dynamicSettings.RippleAmp);
+        uniforms.SetByName("uRippleFreq", _dynamicSettings.RippleFreq);
+        uniforms.SetByName("uRippleSpeed", _dynamicSettings.RippleSpeed);
 
         if (_statsBuffer) {
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, _statsBuffer);
@@ -258,6 +271,27 @@ namespace VCX::Apps::SphereAudioVisualizer {
         const char * colorModes[] = { "Grayscale", "Gradient" };
         if (ImGui::Combo("Color Mode", &mode, colorModes, IM_ARRAYSIZE(colorModes))) {
             _renderSettings.Mode = static_cast<ColorMode>(mode);
+        }
+
+        ImGui::Separator();
+        ImGui::Text("Dynamics");
+        if (ImGui::SliderFloat("Noise Strength", &_dynamicSettings.NoiseStrength, 0.f, 0.3f)) {
+            LogDynamicParam("noiseStrength", _dynamicSettings.NoiseStrength);
+        }
+        if (ImGui::SliderFloat("Noise Frequency", &_dynamicSettings.NoiseFreq, 0.1f, 10.f)) {
+            LogDynamicParam("noiseFreq", _dynamicSettings.NoiseFreq);
+        }
+        if (ImGui::SliderFloat("Noise Speed", &_dynamicSettings.NoiseSpeed, 0.f, 5.f)) {
+            LogDynamicParam("noiseSpeed", _dynamicSettings.NoiseSpeed);
+        }
+        if (ImGui::SliderFloat("Ripple Amplitude", &_dynamicSettings.RippleAmp, 0.f, 0.3f)) {
+            LogDynamicParam("rippleAmp", _dynamicSettings.RippleAmp);
+        }
+        if (ImGui::SliderFloat("Ripple Frequency", &_dynamicSettings.RippleFreq, 0.1f, 32.f)) {
+            LogDynamicParam("rippleFreq", _dynamicSettings.RippleFreq);
+        }
+        if (ImGui::SliderFloat("Ripple Speed", &_dynamicSettings.RippleSpeed, 0.f, 6.f)) {
+            LogDynamicParam("rippleSpeed", _dynamicSettings.RippleSpeed);
         }
 
         ImGui::Separator();

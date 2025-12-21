@@ -35,8 +35,18 @@ namespace VCX::Apps::SphereAudioVisualizer {
             float EarlyExitRatio = 0.f;
         };
 
+        struct DynamicSettings {
+            float NoiseStrength = 0.06f;
+            float NoiseFreq     = 4.f;
+            float NoiseSpeed    = 0.8f;
+            float RippleAmp     = 0.08f;
+            float RippleFreq    = 16.f;
+            float RippleSpeed   = 1.4f;
+        };
+
         void RenderVolume(float deltaTime);
         void ResetStatsBuffer();
+        void LogDynamicParam(char const * name, float value);
 
         float _alpha;
         SphereVolumeData _volumeData;
@@ -46,6 +56,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         VCX::Engine::Camera _camera;
         VCX::Labs::Common::OrbitCameraManager _cameraManager;
         RenderSettings _renderSettings;
+        DynamicSettings _dynamicSettings;
         StatsSnapshot _statsSnapshot;
         GLuint _statsBuffer = 0;
         float _statsTimer = 0.f;
@@ -53,6 +64,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         uint64_t _accumulatedRays = 0;
         uint64_t _accumulatedEarly = 0;
         uint32_t _frameIndex = 0;
+        float _time = 0.f;
     };
 
     void EnsureLogger();

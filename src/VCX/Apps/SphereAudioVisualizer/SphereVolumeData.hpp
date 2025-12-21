@@ -16,6 +16,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
             int NumShells = 8;
             float Thickness = 0.08f;
             float GlobalGain = 1.f;
+            float StaticRippleAmp = 0.05f;
+            float StaticRippleFreq = 14.f;
         };
 
         SphereVolumeData();
