@@ -20,6 +20,8 @@ uniform float uNoiseSpeed;
 uniform float uRippleAmp;
 uniform float uRippleFreq;
 uniform float uRippleSpeed;
+uniform float uBass;
+uniform int uShellMode;
 layout(binding = 0) uniform sampler3D uVolumeTexture;
 
 layout(std430, binding = 0) buffer RayMarchStats {
@@ -104,10 +106,15 @@ void main() {
         vec3 normalizedPos = samplePos;
         float radialLen = length(normalizedPos);
         vec3 radialDir = radialLen > 1e-5 ? normalizedPos / radialLen : vec3(0.0);
-        float noise = Noise3(normalizedPos * uNoiseFreq + vec3(uTime * uNoiseSpeed));
-        vec3 warpedPos = normalizedPos + radialDir * (uNoiseStrength * (noise * 2.0 - 1.0));
-        float ripple = uRippleAmp * sin(uRippleFreq * radialLen + uTime * uRippleSpeed);
-        warpedPos += radialDir * ripple;
+        vec3 warpedPos = normalizedPos;
+        if (uShellMode == 0) {
+            float ripple = uRippleAmp * uBass * sin(uRippleFreq * radialLen + uTime * uRippleSpeed);
+            warpedPos += radialDir * ripple;
+        } else {
+            float noise = Noise3(normalizedPos * uNoiseFreq + vec3(uTime * uNoiseSpeed));
+            float warp = uNoiseStrength * uBass * (noise * 2.0 - 1.0);
+            warpedPos += radialDir * warp;
+        }
         warpedPos = clamp(warpedPos, uVolumeMin, uVolumeMax);
         vec3 texCoord = (warpedPos - uVolumeMin) / (uVolumeMax - uVolumeMin);
         if (any(lessThan(texCoord, vec3(0.0))) || any(greaterThan(texCoord, vec3(1.0)))) {

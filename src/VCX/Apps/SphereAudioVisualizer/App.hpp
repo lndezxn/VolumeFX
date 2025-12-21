@@ -79,6 +79,11 @@ namespace VCX::Apps::SphereAudioVisualizer {
             float EarlyExitRatio = 0.f;
         };
 
+        enum class PerturbMode : int {
+            Ripple = 0,
+            Noise  = 1,
+        };
+
         struct DynamicSettings {
             float NoiseStrength = 0.06f;
             float NoiseFreq     = 4.f;
@@ -86,6 +91,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
             float RippleAmp     = 0.08f;
             float RippleFreq    = 16.f;
             float RippleSpeed   = 1.4f;
+            PerturbMode Mode    = PerturbMode::Ripple;
         };
 
         void RenderVolume(float deltaTime);
@@ -110,6 +116,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         float _audioLogTimer = 0.f;
         float _fftLogTimer = 0.f;
         float _volumeLogTimer = 0.f;
+        float _audioBass = 0.f;
         float _volumeBuildMs = 0.f;
         float _volumeUploadMs = 0.f;
         std::size_t _fftUpdatesPerSecond = 0;

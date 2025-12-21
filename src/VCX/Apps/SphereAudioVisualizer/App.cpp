@@ -539,6 +539,13 @@ namespace VCX::Apps::SphereAudioVisualizer {
         state.EnergyMax = normMax;
         state.EnergyAvg = state.BandEnergies.empty() ? 0.f : normSum / static_cast<float>(state.BandEnergies.size());
 
+        int bassBands = std::min<int>(static_cast<int>(state.BandEnergies.size()), 3);
+        float bassSum = 0.f;
+        for (int i = 0; i < bassBands; ++i) {
+            bassSum += state.BandEnergies[static_cast<std::size_t>(i)];
+        }
+        _audioBass = bassBands > 0 ? bassSum / static_cast<float>(bassBands) : 0.f;
+
         if (!state.Spectrum.empty()) {
             DownsampleSpectrum(state.Spectrum, state.SpectrumDownsample, 128);
         } else {
@@ -630,6 +637,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         uniforms.SetByName("uRippleAmp", _dynamicSettings.RippleAmp);
         uniforms.SetByName("uRippleFreq", _dynamicSettings.RippleFreq);
         uniforms.SetByName("uRippleSpeed", _dynamicSettings.RippleSpeed);
+        uniforms.SetByName("uBass", _audioBass);
+        uniforms.SetByName("uShellMode", static_cast<int>(_dynamicSettings.Mode));
 
         if (_statsBuffer) {
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, _statsBuffer);
@@ -756,6 +765,13 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
         ImGui::Separator();
         ImGui::Text("Dynamics");
+        ImGui::Text("Bass: %.3f", _audioBass);
+        const char * perturbModes[] = { "Ripple", "Noise" };
+        int modeIndex = static_cast<int>(_dynamicSettings.Mode);
+        if (ImGui::Combo("Perturb Mode", &modeIndex, perturbModes, IM_ARRAYSIZE(perturbModes))) {
+            _dynamicSettings.Mode = static_cast<App::PerturbMode>(modeIndex);
+            LogDynamicParam("perturbMode", static_cast<float>(modeIndex));
+        }
         if (ImGui::SliderFloat("Noise Strength", &_dynamicSettings.NoiseStrength, 0.f, 0.3f)) {
             LogDynamicParam("noiseStrength", _dynamicSettings.NoiseStrength);
         }
