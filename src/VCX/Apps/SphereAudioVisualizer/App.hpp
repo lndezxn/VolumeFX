@@ -109,6 +109,9 @@ namespace VCX::Apps::SphereAudioVisualizer {
         float _audioWindowRms = 0.f;
         float _audioLogTimer = 0.f;
         float _fftLogTimer = 0.f;
+        float _volumeLogTimer = 0.f;
+        float _volumeBuildMs = 0.f;
+        float _volumeUploadMs = 0.f;
         std::size_t _fftUpdatesPerSecond = 0;
         std::size_t _fftUpdateCounter = 0;
         std::size_t _audioReadable = 0;

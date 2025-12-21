@@ -545,6 +545,20 @@ namespace VCX::Apps::SphereAudioVisualizer {
             state.SpectrumDownsample.clear();
         }
 
+        auto const volumeStats = _volumeData.UpdateVolume(state.BandEnergies);
+        _volumeBuildMs = volumeStats.BuildMs;
+        _volumeUploadMs = volumeStats.UploadMs;
+        _volumeLogTimer += deltaTime;
+        if (_volumeLogTimer >= 1.f) {
+            _volumeLogTimer -= 1.f;
+            spdlog::info("Volume build {:.2f} ms, upload {:.2f} ms, energies min {:.4f}, max {:.4f}, avg {:.4f}",
+                _volumeBuildMs,
+                _volumeUploadMs,
+                state.EnergyMin,
+                state.EnergyMax,
+                state.EnergyAvg);
+        }
+
         if (!state.Window.empty()) {
             float step = static_cast<float>(state.Window.size()) / static_cast<float>(_oscilloscopePoints.size());
             for (std::size_t i = 0; i < _oscilloscopePoints.size(); ++i) {
@@ -682,39 +696,50 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
         RenderAudioUI();
 
-        auto settings = _volumeData.GetSettings();
-        bool settingsChanged = false;
-        int volumeSizeInput = static_cast<int>(settings.VolumeSize);
-        if (ImGui::InputInt("Volume Size", &volumeSizeInput)) {
-            settings.VolumeSize = static_cast<std::size_t>(std::clamp(volumeSizeInput, 32, 256));
-            settingsChanged = true;
-        }
+        if (ImGui::CollapsingHeader("Volume Shell", ImGuiTreeNodeFlags_DefaultOpen)) {
+            auto settings = _volumeData.GetSettings();
+            bool settingsChanged = false;
+            int volumeSizeInput = static_cast<int>(settings.VolumeSize);
+            if (ImGui::InputInt("Volume Size", &volumeSizeInput)) {
+                settings.VolumeSize = static_cast<std::size_t>(std::clamp(volumeSizeInput, 32, 256));
+                settingsChanged = true;
+            }
 
-        int shellCount = settings.NumShells;
-        if (ImGui::SliderInt("Shells", &shellCount, 1, 32)) {
-            settings.NumShells = shellCount;
-            settingsChanged = true;
-        }
+            if (ImGui::SliderFloat("Amplitude Scale", &settings.AmpScale, 0.f, 5.f)) {
+                settingsChanged = true;
+            }
+            if (ImGui::SliderFloat("Thickness Scale", &settings.ThicknessScale, 0.f, 5.f)) {
+                settingsChanged = true;
+            }
+            if (ImGui::SliderFloat("Base Thickness", &settings.BaseThickness, 0.01f, 0.5f)) {
+                settingsChanged = true;
+            }
+            if (ImGui::SliderFloat("Global Gain", &settings.GlobalGain, 0.1f, 5.f)) {
+                settingsChanged = true;
+            }
+            if (ImGui::SliderFloat("Smoothing Factor", &settings.SmoothingFactor, 0.f, 1.f)) {
+                settingsChanged = true;
+            }
+            if (ImGui::SliderFloat("Tilt (low->high)", &settings.Tilt, -1.f, 1.f)) {
+                settingsChanged = true;
+            }
 
-        float thickness = settings.Thickness;
-        if (ImGui::SliderFloat("Thickness", &thickness, 0.02f, 0.5f)) {
-            settings.Thickness = thickness;
-            settingsChanged = true;
-        }
+            const char * layoutNames[] = { "Linear", "Log" };
+            int layoutIndex = static_cast<int>(settings.RadiusLayout);
+            if (ImGui::Combo("Radius Layout", &layoutIndex, layoutNames, IM_ARRAYSIZE(layoutNames))) {
+                settings.RadiusLayout = static_cast<SphereVolumeData::RadiusDistribution>(layoutIndex);
+                settingsChanged = true;
+            }
 
-        float gain = settings.GlobalGain;
-        if (ImGui::SliderFloat("Global Gain", &gain, 0.1f, 5.f)) {
-            settings.GlobalGain = gain;
-            settingsChanged = true;
-        }
+            ImGui::Text("Volume build: %.2f ms, upload: %.2f ms", _volumeBuildMs, _volumeUploadMs);
+            if (ImGui::Button("Regenerate")) {
+                settingsChanged = true;
+            }
 
-        if (ImGui::Button("Regenerate")) {
-            settingsChanged = true;
-        }
-
-        if (settingsChanged) {
-            _volumeData.SetSettings(settings);
-            _volumeData.Regenerate();
+            if (settingsChanged) {
+                _volumeData.SetSettings(settings);
+                _volumeData.Regenerate();
+            }
         }
 
         ImGui::Separator();
