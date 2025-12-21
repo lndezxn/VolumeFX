@@ -242,19 +242,24 @@ static void kf_work(kiss_fft_cpx * Fout, const kiss_fft_cpx * f, const size_t fs
 static void kf_factor(int n, int * facbuf) {
     int p = 4;
     int i = 0;
-    while (n > 1 && p <= n) {
+    const int maxPairs = 32; // factors array holds 64 entries (pairs of p,n)
+    do {
         while (n % p) {
             switch (p) {
                 case 4: p = 2; break;
                 case 2: p = 3; break;
                 default: p += 2; break;
             }
-            if (p * p > n) p = n;
+            if (p > std::floor(std::sqrt(static_cast<float>(n)))) {
+                p = n; // n is prime
+            }
         }
         n /= p;
-        facbuf[i++] = p;
-        facbuf[i++] = n;
-    }
+        if (i + 1 < maxPairs * 2) {
+            facbuf[i++] = p;
+            facbuf[i++] = n;
+        }
+    } while (n > 1 && i + 1 < maxPairs * 2);
 }
 
 kiss_fft_cfg kiss_fft_alloc(int nfft, int inverse_fft, void * mem, size_t * lenmem) {
