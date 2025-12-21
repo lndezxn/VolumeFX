@@ -309,20 +309,36 @@ namespace VCX::Apps::SphereAudioVisualizer {
     }
 
     std::size_t AudioFilePlayer::GetLatestWindow(float * dst, std::size_t fftSize, std::size_t headroom) {
-        if (dst == nullptr || fftSize == 0) return 0;
-        std::size_t available = RingReadable();
+        if (dst == nullptr || fftSize == 0 || _ringCapacity == 0) return 0;
+        std::size_t write = _ringWrite.load(std::memory_order_acquire);
+        std::size_t read  = _ringRead.load(std::memory_order_acquire);
+        std::size_t available = write - read;
+        if (available > _ringCapacity) available = _ringCapacity; // clamp in case of overwrite
+
         std::size_t target = fftSize + headroom;
-        if (available > target) {
-            std::size_t drop = available - target;
-            DiscardSamples(drop);
-            available = target;
+        if (target > _ringCapacity) target = _ringCapacity;
+        if (available > target) available = target;
+
+        std::size_t toCopy = std::min<std::size_t>(fftSize, available);
+        if (toCopy > 0) {
+            // Copy the latest toCopy samples ending at write-1.
+            std::size_t writePos = write % _ringCapacity;
+            std::size_t start = (write >= toCopy)
+                ? ((write - toCopy) % _ringCapacity)
+                : ((_ringCapacity + writePos + _ringCapacity - (toCopy % _ringCapacity)) % _ringCapacity);
+
+            std::size_t firstChunk = std::min(toCopy, _ringCapacity - start);
+            std::memcpy(dst, _ring.data() + start, firstChunk * sizeof(float));
+            if (firstChunk < toCopy) {
+                std::memcpy(dst + firstChunk, _ring.data(), (toCopy - firstChunk) * sizeof(float));
+            }
         }
-        std::size_t read = ReadRing(dst, std::min(fftSize, available));
-        if (read < fftSize) {
-            std::fill(dst + read, dst + fftSize, 0.f);
-            _underrunReads.fetch_add(fftSize - read, std::memory_order_relaxed);
+
+        if (toCopy < fftSize) {
+            std::fill(dst + toCopy, dst + fftSize, 0.f);
+            _underrunReads.fetch_add(fftSize - toCopy, std::memory_order_relaxed);
         }
-        return read;
+        return toCopy;
     }
 
     void AudioFilePlayer::DiscardSamples(std::size_t count) {

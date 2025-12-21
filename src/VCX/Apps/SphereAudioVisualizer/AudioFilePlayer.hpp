@@ -40,6 +40,12 @@ namespace VCX::Apps::SphereAudioVisualizer {
          * @return number of samples actually read.
          */
         std::size_t ReadSamples(float * dst, std::size_t maxSamples);
+
+        /**
+         * Copy the latest fftSize samples without advancing the read cursor (peek).
+         * If available samples < fftSize, the tail is zero padded.
+         * headroom keeps up to (fftSize+headroom) recent samples; older ones are skipped logically.
+         */
         std::size_t GetLatestWindow(float * dst, std::size_t fftSize, std::size_t headroom);
 
         std::string const & GetLastError() const;

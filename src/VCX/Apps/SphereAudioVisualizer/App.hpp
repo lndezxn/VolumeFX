@@ -6,6 +6,7 @@
 
 #include "Apps/SphereAudioVisualizer/SphereVolumeData.hpp"
 #include "Apps/SphereAudioVisualizer/AudioFilePlayer.hpp"
+#include "kissfft/kiss_fft.h"
 #include "Engine/Camera.hpp"
 #include "Engine/GL/Program.h"
 #include "Engine/GL/resource.hpp"
@@ -18,6 +19,46 @@ namespace VCX::Apps::SphereAudioVisualizer {
         App();
         ~App();
         void OnFrame() override;
+
+        enum class WindowType : int { Hann, Hamming };
+        enum class MappingType : int { Linear, Log };
+        enum class AggregateType : int { Average, Max };
+
+        struct AudioAnalysisSettings {
+            int FftSizeIndex = 2; // 2048 by default
+            WindowType Window = WindowType::Hann;
+            MappingType Mapping = MappingType::Log;
+            AggregateType Aggregate = AggregateType::Average;
+            int NumBands = 16;
+            float CompressK = 8.f;
+            bool ShowSpectrum = false;
+            bool AgcEnabled = true;
+            float AgcTarget = 0.8f;
+            float AgcAttack = 0.08f;   // seconds
+            float AgcRelease = 0.4f;   // seconds
+            float AgcMaxGain = 20.f;
+            float MinFrequency = 20.f;
+        };
+
+        struct AudioAnalysisState {
+            std::vector<float> Window;
+            std::vector<float> WindowCoeffs;
+            std::vector<float> Spectrum; // magnitude per bin (0..Nyquist)
+            std::vector<float> SpectrumDownsample;
+            std::vector<float> BandEnergies;
+            std::vector<kiss_fft_cpx> FftIn;
+            std::vector<kiss_fft_cpx> FftOut;
+            WindowType CachedWindow = WindowType::Hann;
+            int CachedWindowSize = 0;
+            float AgcGain = 1.f;
+            float LastFftMs = 0.f;
+            float EnergyMin = 0.f;
+            float EnergyMax = 0.f;
+            float EnergyAvg = 0.f;
+            std::size_t Underruns = 0;
+        };
+
+        static constexpr std::array<int, 4> kFftSizes { 512, 1024, 2048, 4096 };
 
     private:
         enum class ColorMode : int {
@@ -58,13 +99,16 @@ namespace VCX::Apps::SphereAudioVisualizer {
         AudioFilePlayer _audio;
         char _audioPath[512] = "";
         bool _audioLoop = false;
-        std::vector<float> _audioWindow;
-        static constexpr std::size_t kFftWindowSize = 2048;
+        AudioAnalysisSettings _analysisSettings;
+        AudioAnalysisState _analysisState;
+        kiss_fft_cfg _fftCfg = nullptr;
+        int _fftSize = kFftSizes[2];
         static constexpr std::size_t kOscilloscopeSamples = 256;
-        int _audioHeadroom = static_cast<int>(kFftWindowSize * 2);
+        int _audioHeadroom = kFftSizes.back();
         std::array<float, kOscilloscopeSamples> _oscilloscopePoints{};
         float _audioWindowRms = 0.f;
         float _audioLogTimer = 0.f;
+        float _fftLogTimer = 0.f;
         std::size_t _fftUpdatesPerSecond = 0;
         std::size_t _fftUpdateCounter = 0;
         std::size_t _audioReadable = 0;

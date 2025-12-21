@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <mutex>
+#include <numeric>
 #include <vector>
 
 #include <glad/glad.h>
@@ -74,6 +77,132 @@ namespace VCX::Apps::SphereAudioVisualizer {
                 spdlog::info("SphereAudioVisualizer logging to {}", logPath.string());
             });
         }
+
+        int ClampFftIndex(int idx) {
+            return std::clamp(idx, 0, static_cast<int>(App::kFftSizes.size()) - 1);
+        }
+
+        int CurrentFftSize(App::AudioAnalysisSettings const & settings) {
+            return App::kFftSizes[ClampFftIndex(settings.FftSizeIndex)];
+        }
+
+        void BuildWindowCoeffs(std::vector<float> & coeffs, int fftSize, App::WindowType type) {
+            coeffs.resize(static_cast<std::size_t>(fftSize));
+            if (fftSize <= 1) {
+                std::fill(coeffs.begin(), coeffs.end(), 1.f);
+                return;
+            }
+            float denom = static_cast<float>(fftSize - 1);
+            float twoPi = 6.28318530718f;
+            for (int i = 0; i < fftSize; ++i) {
+                float phase = twoPi * static_cast<float>(i) / denom;
+                switch (type) {
+                case App::WindowType::Hamming:
+                    coeffs[static_cast<std::size_t>(i)] = 0.54f - 0.46f * std::cos(phase);
+                    break;
+                case App::WindowType::Hann:
+                default:
+                    coeffs[static_cast<std::size_t>(i)] = 0.5f * (1.f - std::cos(phase));
+                    break;
+                }
+            }
+        }
+
+        void ApplyWindow(std::vector<float> const & coeffs, std::vector<float> & samples, int fftSize) {
+            if (coeffs.size() < static_cast<std::size_t>(fftSize) || samples.size() < static_cast<std::size_t>(fftSize))
+                return;
+            for (int i = 0; i < fftSize; ++i) {
+                samples[static_cast<std::size_t>(i)] *= coeffs[static_cast<std::size_t>(i)];
+            }
+        }
+
+        void DownsampleSpectrum(std::vector<float> const & src, std::vector<float> & dst, std::size_t target) {
+            if (target == 0 || src.empty()) {
+                dst.clear();
+                return;
+            }
+            dst.assign(target, 0.f);
+            float step = static_cast<float>(src.size()) / static_cast<float>(target);
+            for (std::size_t i = 0; i < target; ++i) {
+                std::size_t start = static_cast<std::size_t>(std::floor(step * i));
+                std::size_t end = static_cast<std::size_t>(std::floor(step * (i + 1)));
+                end = std::min(end, src.size());
+                start = std::min(start, src.size());
+                if (end <= start) continue;
+                float sum = 0.f;
+                for (std::size_t j = start; j < end; ++j) {
+                    sum += src[j];
+                }
+                dst[i] = sum / static_cast<float>(end - start);
+            }
+        }
+
+        struct BandRange {
+            int Start;
+            int End; // exclusive
+        };
+
+        BandRange ComputeBandRange(App::AudioAnalysisSettings const & settings, int bandIndex, int numBands, int fftSize, int sampleRate) {
+            int half = fftSize / 2;
+            if (half <= 1) return { 0, 1 };
+            bandIndex = std::clamp(bandIndex, 0, numBands - 1);
+            if (settings.Mapping == App::MappingType::Linear) {
+                int start = static_cast<int>(std::floor(static_cast<float>(bandIndex) * half / numBands));
+                int end   = static_cast<int>(std::floor(static_cast<float>(bandIndex + 1) * half / numBands));
+                end = std::max(end, start + 1);
+                end = std::min(end, half);
+                return { start, end };
+            }
+
+            float nyquist = static_cast<float>(sampleRate) * 0.5f;
+            float fMin = std::max(settings.MinFrequency, 1.f);
+            float fMax = std::max(fMin, nyquist);
+            float logMin = std::log(fMin);
+            float logMax = std::log(fMax);
+            float t0 = static_cast<float>(bandIndex) / static_cast<float>(numBands);
+            float t1 = static_cast<float>(bandIndex + 1) / static_cast<float>(numBands);
+            float f0 = std::exp(logMin + (logMax - logMin) * t0);
+            float f1 = std::exp(logMin + (logMax - logMin) * t1);
+            int start = static_cast<int>(std::floor(f0 * static_cast<float>(fftSize) / static_cast<float>(sampleRate)));
+            int end   = static_cast<int>(std::ceil (f1 * static_cast<float>(fftSize) / static_cast<float>(sampleRate)));
+            start = std::clamp(start, 0, half - 1);
+            end   = std::clamp(end, start + 1, half);
+            return { start, end };
+        }
+
+        float AggregateBand(std::vector<float> const & spectrum, BandRange range, App::AggregateType agg) {
+            if (range.End <= range.Start || spectrum.empty()) return 0.f;
+            range.Start = std::clamp(range.Start, 0, static_cast<int>(spectrum.size()));
+            range.End = std::clamp(range.End, 0, static_cast<int>(spectrum.size()));
+            float value = 0.f;
+            if (agg == App::AggregateType::Max) {
+                for (int i = range.Start; i < range.End; ++i) {
+                    value = std::max(value, spectrum[static_cast<std::size_t>(i)]);
+                }
+            } else {
+                float sum = 0.f;
+                for (int i = range.Start; i < range.End; ++i) {
+                    sum += spectrum[static_cast<std::size_t>(i)];
+                }
+                value = sum / static_cast<float>(range.End - range.Start);
+            }
+            return value;
+        }
+
+        float ApplyCompression(float magnitude, float k) {
+            k = std::max(k, 0.f);
+            return std::log1p(k * magnitude);
+        }
+
+        float UpdateAgcGain(float currentGain, float level, App::AudioAnalysisSettings const & settings, float deltaTime) {
+            float target = (level > 1e-6f) ? settings.AgcTarget / level : settings.AgcMaxGain;
+            target = std::clamp(target, 1.f / settings.AgcMaxGain, settings.AgcMaxGain);
+            float tau = target > currentGain ? settings.AgcAttack : settings.AgcRelease;
+            tau = std::max(tau, 1e-3f);
+            float alpha = std::exp(-deltaTime / tau);
+            float updated = alpha * currentGain + (1.f - alpha) * target;
+            return std::clamp(updated, 1.f / settings.AgcMaxGain, settings.AgcMaxGain);
+        }
     }
 
     void EnsureLogger() {
@@ -108,6 +237,10 @@ namespace VCX::Apps::SphereAudioVisualizer {
     }
 
     App::~App() {
+        if (_fftCfg) {
+            kiss_fft_free(_fftCfg);
+            _fftCfg = nullptr;
+        }
         if (_statsBuffer) {
             glDeleteBuffers(1, &_statsBuffer);
             _statsBuffer = 0;
@@ -164,8 +297,9 @@ namespace VCX::Apps::SphereAudioVisualizer {
         float duration = _audio.GetDurationSeconds();
         ImGui::Text("Time: %.2f / %.2f s", timeNow, duration);
         ImGui::Text("Rate: %u Hz, Channels: %u", _audio.GetSampleRate(), _audio.GetChannels());
-        if (ImGui::SliderInt("Headroom", &_audioHeadroom, 0, static_cast<int>(kFftWindowSize * 2))) {
-            _audioHeadroom = std::clamp(_audioHeadroom, 0, static_cast<int>(kFftWindowSize * 2));
+        int maxHeadroom = _fftSize * 2;
+        if (ImGui::SliderInt("Headroom", &_audioHeadroom, 0, maxHeadroom)) {
+            _audioHeadroom = std::clamp(_audioHeadroom, 0, maxHeadroom);
         }
         float fill = _audio.GetRingFillRatio();
         ImGui::ProgressBar(fill, ImVec2(-1.f, 0.f), "Ring fill");
@@ -173,6 +307,13 @@ namespace VCX::Apps::SphereAudioVisualizer {
         ImGui::Text("Readable: %zu", _audioReadable);
         ImGui::Text("FFT updates/s: %zu", _fftUpdatesPerSecond);
         ImGui::Text("Window RMS: %.5f", _audioWindowRms);
+        ImGui::Text("FFT size: %d", _fftSize);
+        ImGui::Text("FFT time: %.3f ms", _analysisState.LastFftMs);
+        ImGui::Text("Energies min/max/avg: %.3f / %.3f / %.3f",
+            _analysisState.EnergyMin,
+            _analysisState.EnergyMax,
+            _analysisState.EnergyAvg);
+        ImGui::Text("AGC gain: %.3f", _analysisState.AgcGain);
         ImGui::PlotLines("Oscilloscope",
             _oscilloscopePoints.data(),
             static_cast<int>(_oscilloscopePoints.size()),
@@ -191,39 +332,225 @@ namespace VCX::Apps::SphereAudioVisualizer {
         if (_audio.UsingSineFallback()) {
             ImGui::Text("Fallback: sine test (load failed)");
         }
+
+        ImGui::Separator();
+        ImGui::Text("FFT / Analysis");
+        const char * fftSizeLabels[] = { "512", "1024", "2048", "4096" };
+        if (ImGui::Combo("FFT Size", &_analysisSettings.FftSizeIndex, fftSizeLabels, IM_ARRAYSIZE(fftSizeLabels))) {
+            _analysisSettings.FftSizeIndex = ClampFftIndex(_analysisSettings.FftSizeIndex);
+        }
+
+        const char * windowNames[] = { "Hann", "Hamming" };
+        int windowType = static_cast<int>(_analysisSettings.Window);
+        if (ImGui::Combo("Window", &windowType, windowNames, IM_ARRAYSIZE(windowNames))) {
+            _analysisSettings.Window = static_cast<WindowType>(windowType);
+        }
+
+        const char * mappingNames[] = { "Linear", "Log" };
+        int mappingType = static_cast<int>(_analysisSettings.Mapping);
+        if (ImGui::Combo("Mapping", &mappingType, mappingNames, IM_ARRAYSIZE(mappingNames))) {
+            _analysisSettings.Mapping = static_cast<MappingType>(mappingType);
+        }
+
+        const char * aggregateNames[] = { "Average", "Max" };
+        int aggregateType = static_cast<int>(_analysisSettings.Aggregate);
+        if (ImGui::Combo("Band Aggregate", &aggregateType, aggregateNames, IM_ARRAYSIZE(aggregateNames))) {
+            _analysisSettings.Aggregate = static_cast<AggregateType>(aggregateType);
+        }
+
+        const char * bandOptions[] = { "8", "16", "32" };
+        int bandIndex = (_analysisSettings.NumBands == 8) ? 0 : (_analysisSettings.NumBands == 32 ? 2 : 1);
+        if (ImGui::Combo("Bands", &bandIndex, bandOptions, IM_ARRAYSIZE(bandOptions))) {
+            _analysisSettings.NumBands = bandIndex == 0 ? 8 : (bandIndex == 2 ? 32 : 16);
+        }
+
+        ImGui::SliderFloat("Min Freq (Hz)", &_analysisSettings.MinFrequency, 1.f, std::max(1.f, _audio.GetSampleRate() * 0.5f));
+        ImGui::SliderFloat("Compress k", &_analysisSettings.CompressK, 0.f, 32.f);
+        ImGui::Checkbox("Show Spectrum", &_analysisSettings.ShowSpectrum);
+
+        bool agcEnabled = _analysisSettings.AgcEnabled;
+        if (ImGui::Checkbox("AGC Enabled", &agcEnabled)) {
+            _analysisSettings.AgcEnabled = agcEnabled;
+        }
+        ImGui::SliderFloat("AGC Target", &_analysisSettings.AgcTarget, 0.05f, 2.f);
+        ImGui::SliderFloat("AGC Attack (s)", &_analysisSettings.AgcAttack, 0.01f, 1.f);
+        ImGui::SliderFloat("AGC Release (s)", &_analysisSettings.AgcRelease, 0.05f, 2.f);
+        ImGui::SliderFloat("AGC Max Gain", &_analysisSettings.AgcMaxGain, 1.f, 40.f);
+
+        if (!_analysisState.BandEnergies.empty()) {
+            ImGui::PlotHistogram("Energies",
+                _analysisState.BandEnergies.data(),
+                static_cast<int>(_analysisState.BandEnergies.size()),
+                0,
+                nullptr,
+                0.f,
+                1.f,
+                ImVec2(-1.f, 120.f));
+        }
+        if (_analysisSettings.ShowSpectrum && !_analysisState.SpectrumDownsample.empty()) {
+            ImGui::PlotLines("Spectrum",
+                _analysisState.SpectrumDownsample.data(),
+                static_cast<int>(_analysisState.SpectrumDownsample.size()),
+                0,
+                nullptr,
+                0.f,
+                0.1f,
+                ImVec2(-1.f, 80.f));
+        }
     }
 
     void App::UpdateAudioAnalysis(float deltaTime) {
-        if (_audioWindow.size() != kFftWindowSize) {
-            _audioWindow.assign(kFftWindowSize, 0.f);
+        auto & settings = _analysisSettings;
+        auto & state = _analysisState;
+        settings.FftSizeIndex = ClampFftIndex(settings.FftSizeIndex);
+        _fftSize = CurrentFftSize(settings);
+        std::size_t fftSize = static_cast<std::size_t>(_fftSize);
+        settings.NumBands = std::clamp(settings.NumBands, 1, 256);
+
+        static bool sLoggedInit = false;
+        if (!sLoggedInit) {
+            spdlog::info("AudioAnalysis init fftSize {}, bands {}", _fftSize, settings.NumBands);
+            sLoggedInit = true;
         }
-        int headroom = std::clamp(_audioHeadroom, 0, static_cast<int>(kFftWindowSize * 2));
+
+        if (_fftCfg == nullptr || state.CachedWindowSize != _fftSize) {
+            if (_fftCfg) {
+                kiss_fft_free(_fftCfg);
+            }
+            _fftCfg = kiss_fft_alloc(_fftSize, 0, nullptr, nullptr);
+            state.CachedWindowSize = _fftSize;
+            spdlog::info("Rebuild FFT cfg size {} (cfg null? {})", _fftSize, _fftCfg == nullptr);
+        }
+
+        if (state.Window.size() != fftSize) {
+            state.Window.assign(fftSize, 0.f);
+        }
+        if (state.Spectrum.size() != fftSize / 2) {
+            state.Spectrum.assign(fftSize / 2, 0.f);
+        }
+        if (state.BandEnergies.size() != static_cast<std::size_t>(settings.NumBands)) {
+            state.BandEnergies.assign(static_cast<std::size_t>(settings.NumBands), 0.f);
+        }
+        if (state.FftIn.size() != fftSize) {
+            state.FftIn.resize(fftSize);
+        }
+        if (state.FftOut.size() != fftSize) {
+            state.FftOut.resize(fftSize);
+        }
+        if (state.WindowCoeffs.size() != fftSize || state.CachedWindow != settings.Window) {
+            BuildWindowCoeffs(state.WindowCoeffs, _fftSize, settings.Window);
+            state.CachedWindow = settings.Window;
+            spdlog::debug("Window coeffs built size {} type {}", _fftSize, static_cast<int>(settings.Window));
+        }
+
+        int headroom = std::clamp(_audioHeadroom, 0, _fftSize * 2);
+        _audioHeadroom = headroom;
         auto readable = _audio.GetAvailableSamples();
         _audioReadable = readable;
-        if (readable >= kFftWindowSize) {
-            std::size_t read = _audio.GetLatestWindow(_audioWindow.data(), kFftWindowSize, static_cast<std::size_t>(headroom));
-            if (read == kFftWindowSize) {
-                ++_fftUpdateCounter;
-            }
+
+        std::size_t read = _audio.GetLatestWindow(state.Window.data(), fftSize, static_cast<std::size_t>(headroom));
+        if (read < fftSize) {
+            ++state.Underruns;
         } else {
-            for (auto & sample : _audioWindow) {
-                sample *= 0.995f;
-            }
+            ++_fftUpdateCounter;
+        }
+
+        float mean = 0.f;
+        if (!state.Window.empty()) {
+            mean = std::accumulate(state.Window.begin(), state.Window.end(), 0.f) / static_cast<float>(state.Window.size());
         }
         float sumSquares = 0.f;
-        for (auto sample : _audioWindow) {
+        for (auto & sample : state.Window) {
+            sample -= mean;
             sumSquares += sample * sample;
         }
-        _audioWindowRms = _audioWindow.empty() ? 0.f : std::sqrt(sumSquares / static_cast<float>(_audioWindow.size()));
-        if (!_audioWindow.empty()) {
-            float step = static_cast<float>(_audioWindow.size()) / static_cast<float>(_oscilloscopePoints.size());
+        _audioWindowRms = state.Window.empty() ? 0.f : std::sqrt(sumSquares / static_cast<float>(state.Window.size()));
+
+        ApplyWindow(state.WindowCoeffs, state.Window, _fftSize);
+
+        auto const fftStart = std::chrono::high_resolution_clock::now();
+        if (_fftCfg) {
+            for (std::size_t i = 0; i < fftSize; ++i) {
+                state.FftIn[i].r = state.Window[i];
+                state.FftIn[i].i = 0.f;
+            }
+            kiss_fft(_fftCfg, state.FftIn.data(), state.FftOut.data());
+            for (std::size_t i = 0; i < state.Spectrum.size(); ++i) {
+                float re = state.FftOut[i].r;
+                float im = state.FftOut[i].i;
+                state.Spectrum[i] = std::sqrt(re * re + im * im) / static_cast<float>(_fftSize);
+            }
+        } else {
+            std::fill(state.Spectrum.begin(), state.Spectrum.end(), 0.f);
+        }
+        auto const fftEnd = std::chrono::high_resolution_clock::now();
+        state.LastFftMs = std::chrono::duration<float, std::milli>(fftEnd - fftStart).count();
+
+        for (int b = 0; b < settings.NumBands; ++b) {
+            BandRange range = ComputeBandRange(settings, b, settings.NumBands, _fftSize, static_cast<int>(_audio.GetSampleRate()));
+            float energy = AggregateBand(state.Spectrum, range, settings.Aggregate);
+            energy = ApplyCompression(energy, settings.CompressK);
+            state.BandEnergies[static_cast<std::size_t>(b)] = energy;
+        }
+
+        float maxEnergy = 0.f;
+        float minEnergy = std::numeric_limits<float>::max();
+        float sumEnergy = 0.f;
+        for (auto v : state.BandEnergies) {
+            maxEnergy = std::max(maxEnergy, v);
+            minEnergy = std::min(minEnergy, v);
+            sumEnergy += v;
+        }
+        if (state.BandEnergies.empty()) {
+            minEnergy = 0.f;
+        }
+        state.EnergyMin = minEnergy;
+        state.EnergyMax = maxEnergy;
+        state.EnergyAvg = state.BandEnergies.empty() ? 0.f : sumEnergy / static_cast<float>(state.BandEnergies.size());
+
+        float gain = 1.f;
+        if (settings.AgcEnabled) {
+            gain = UpdateAgcGain(state.AgcGain, state.EnergyMax, settings, deltaTime);
+            state.AgcGain = gain;
+        } else {
+            state.AgcGain = 1.f;
+            gain = (state.EnergyMax > 1e-6f) ? 1.f / state.EnergyMax : 1.f;
+        }
+        for (auto & v : state.BandEnergies) {
+            v = std::clamp(v * gain, 0.f, 1.f);
+        }
+
+        float normMin = 1.f;
+        float normMax = 0.f;
+        float normSum = 0.f;
+        for (auto v : state.BandEnergies) {
+            normMin = std::min(normMin, v);
+            normMax = std::max(normMax, v);
+            normSum += v;
+        }
+        if (state.BandEnergies.empty()) {
+            normMin = 0.f;
+        }
+        state.EnergyMin = normMin;
+        state.EnergyMax = normMax;
+        state.EnergyAvg = state.BandEnergies.empty() ? 0.f : normSum / static_cast<float>(state.BandEnergies.size());
+
+        if (!state.Spectrum.empty()) {
+            DownsampleSpectrum(state.Spectrum, state.SpectrumDownsample, 128);
+        } else {
+            state.SpectrumDownsample.clear();
+        }
+
+        if (!state.Window.empty()) {
+            float step = static_cast<float>(state.Window.size()) / static_cast<float>(_oscilloscopePoints.size());
             for (std::size_t i = 0; i < _oscilloscopePoints.size(); ++i) {
-                std::size_t idx = std::min(_audioWindow.size() - 1, static_cast<std::size_t>(i * step));
-                _oscilloscopePoints[i] = _audioWindow[idx];
+                std::size_t idx = std::min(state.Window.size() - 1, static_cast<std::size_t>(i * step));
+                _oscilloscopePoints[i] = state.Window[idx];
             }
         } else {
             _oscilloscopePoints.fill(0.f);
         }
+
         _audioLogTimer += deltaTime;
         if (_audioLogTimer >= 1.f) {
             _audioLogTimer -= 1.f;
@@ -239,6 +566,13 @@ namespace VCX::Apps::SphereAudioVisualizer {
                 _audio.GetDroppedSamples(),
                 _audio.GetUnderrunReads(),
                 headroom);
+        }
+
+        _fftLogTimer += deltaTime;
+        if (_fftLogTimer >= 1.f) {
+            _fftLogTimer -= 1.f;
+            spdlog::info("FFT {:.2f} ms, energy min {:.4f}, max {:.4f}, avg {:.4f}, agc {:.3f}, underruns {}", state.LastFftMs, state.EnergyMin, state.EnergyMax, state.EnergyAvg, state.AgcGain, state.Underruns);
+            state.Underruns = 0;
         }
     }
 
