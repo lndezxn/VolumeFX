@@ -23,6 +23,7 @@ uniform float uRippleSpeed;
 uniform float uBass;
 uniform int uShellMode;
 layout(binding = 0) uniform sampler3D uVolumeTexture;
+layout(binding = 1) uniform sampler2D uTransferLut;
 
 layout(std430, binding = 0) buffer RayMarchStats {
     uint totalSteps;
@@ -122,10 +123,11 @@ void main() {
         }
 
         float density = texture(uVolumeTexture, texCoord).r;
-        float alpha = clamp(density * uAlphaScale, 0.0, 1.0);
+        vec4 lutSample = texture(uTransferLut, vec2(density, 0.5));
         vec3 color = (uColorMode == 0)
             ? vec3(density)
-            : mix(vec3(0.15, 0.3, 0.7), vec3(1.0, 0.7, 0.2), density);
+            : lutSample.rgb;
+        float alpha = clamp(lutSample.a * uAlphaScale, 0.0, 1.0);
 
         accumColor += (1.0 - accumAlpha) * color * alpha;
         accumAlpha += (1.0 - accumAlpha) * alpha;

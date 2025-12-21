@@ -4,12 +4,15 @@
 #include <cstdint>
 #include <vector>
 
+#include <glm/glm.hpp>
+
 #include "Apps/SphereAudioVisualizer/SphereVolumeData.hpp"
 #include "Apps/SphereAudioVisualizer/AudioFilePlayer.hpp"
 #include "kissfft/kiss_fft.h"
 #include "Engine/Camera.hpp"
 #include "Engine/GL/Program.h"
 #include "Engine/GL/resource.hpp"
+#include "Engine/TextureND.hpp"
 #include "Engine/app.h"
 #include "Labs/Common/OrbitCameraManager.h"
 
@@ -94,11 +97,40 @@ namespace VCX::Apps::SphereAudioVisualizer {
             PerturbMode Mode    = PerturbMode::Ripple;
         };
 
+        enum class TransferPreset : int {
+            Smoke = 0,
+            Neon,
+            Heatmap,
+        };
+
+        struct TransferControlPoint {
+            float Position = 0.f;
+            glm::vec3 Color = glm::vec3(0.4f);
+            float Alpha = 1.f;
+        };
+
+        struct TransferFunctionSettings {
+            float LowThreshold = 0.f;
+            float HighThreshold = 1.f;
+            float Gamma = 1.f;
+            float OverallAlpha = 1.f;
+            std::array<TransferControlPoint, 4> ControlPoints {
+                TransferControlPoint{0.f, glm::vec3(0.05f), 0.05f},
+                TransferControlPoint{0.35f, glm::vec3(0.2f, 0.25f, 0.3f), 0.3f},
+                TransferControlPoint{0.7f, glm::vec3(0.6f, 0.4f, 0.2f), 0.7f},
+                TransferControlPoint{1.f, glm::vec3(0.95f, 0.6f, 0.2f), 1.f},
+            };
+        };
+
         void RenderVolume(float deltaTime);
         void ResetStatsBuffer();
         void LogDynamicParam(char const * name, float value);
         void RenderAudioUI();
         void UpdateAudioAnalysis(float deltaTime);
+        void RenderTransferFunctionUI();
+        void UpdateTransferFunctionTexture();
+        void ApplyTransferPreset(TransferPreset preset);
+        glm::vec4 EvaluateTransferFunction(float sample) const;
 
         float _alpha;
         SphereVolumeData _volumeData;
@@ -108,6 +140,9 @@ namespace VCX::Apps::SphereAudioVisualizer {
         AudioAnalysisSettings _analysisSettings;
         AudioAnalysisState _analysisState;
         kiss_fft_cfg _fftCfg = nullptr;
+        TransferFunctionSettings _transferSettings;
+        TransferPreset _transferPreset = TransferPreset::Smoke;
+        bool _transferDirty = true;
         int _fftSize = kFftSizes[2];
         static constexpr std::size_t kOscilloscopeSamples = 256;
         int _audioHeadroom = kFftSizes.back();
@@ -127,6 +162,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         VCX::Engine::GL::UniqueArrayBuffer _fullscreenVBO;
         VCX::Engine::Camera _camera;
         VCX::Labs::Common::OrbitCameraManager _cameraManager;
+        VCX::Engine::GL::UniqueTexture2D _transferLutTexture;
         RenderSettings _renderSettings;
         DynamicSettings _dynamicSettings;
         StatsSnapshot _statsSnapshot;

@@ -12,6 +12,7 @@
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <imgui.h>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -20,6 +21,7 @@
 #include "Assets/bundled.h"
 #include "Engine/app.h"
 #include "Engine/math.hpp"
+#include "Engine/GL/Sampler.hpp"
 
 namespace VCX::Apps::SphereAudioVisualizer {
     namespace {
@@ -31,6 +33,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
         constexpr glm::vec3 kVolumeMin { -1.f };
         constexpr glm::vec3 kVolumeMax {  1.f };
+        constexpr std::size_t kTransferLutSize = 256;
 
         struct StatsData {
             uint32_t Steps     = 0;
@@ -233,6 +236,9 @@ namespace VCX::Apps::SphereAudioVisualizer {
         ResetStatsBuffer();
 
         _volumeProgram.GetUniforms().SetByName("uVolumeTexture", 0);
+        _transferLutTexture.SetUnit(1);
+        _volumeProgram.GetUniforms().SetByName("uTransferLut", 1);
+        ApplyTransferPreset(_transferPreset);
         _volumeData.Regenerate();
     }
 
@@ -401,6 +407,158 @@ namespace VCX::Apps::SphereAudioVisualizer {
                     ImVec2(-1.f, 80.f));
             }
         }
+    }
+
+    void App::RenderTransferFunctionUI() {
+        if (!ImGui::CollapsingHeader("Transfer Function", ImGuiTreeNodeFlags_DefaultOpen)) {
+            return;
+        }
+
+        const char * presetNames[] = { "Smoke", "Neon", "Heatmap" };
+        int presetIndex = static_cast<int>(_transferPreset);
+        if (ImGui::Combo("Preset", &presetIndex, presetNames, IM_ARRAYSIZE(presetNames))) {
+            presetIndex = std::clamp(presetIndex, 0, static_cast<int>(TransferPreset::Heatmap));
+            _transferPreset = static_cast<TransferPreset>(presetIndex);
+            ApplyTransferPreset(_transferPreset);
+        }
+
+        bool settingsChanged = false;
+        float lowValue = _transferSettings.LowThreshold;
+        if (ImGui::SliderFloat("Low Threshold", &lowValue, 0.f, 1.f)) {
+            _transferSettings.LowThreshold = std::min(lowValue, _transferSettings.HighThreshold);
+            settingsChanged = true;
+        }
+        float highValue = _transferSettings.HighThreshold;
+        if (ImGui::SliderFloat("High Threshold", &highValue, 0.f, 1.f)) {
+            _transferSettings.HighThreshold = std::max(highValue, _transferSettings.LowThreshold);
+            settingsChanged = true;
+        }
+        if (ImGui::SliderFloat("Gamma", &_transferSettings.Gamma, 0.1f, 4.f)) {
+            settingsChanged = true;
+        }
+        if (ImGui::SliderFloat("Overall Alpha", &_transferSettings.OverallAlpha, 0.f, 1.f)) {
+            settingsChanged = true;
+        }
+
+        for (int i = 0; i < static_cast<int>(_transferSettings.ControlPoints.size()); ++i) {
+            auto & point = _transferSettings.ControlPoints[static_cast<std::size_t>(i)];
+            ImGui::PushID(i);
+            if (ImGui::ColorEdit3("Color", glm::value_ptr(point.Color))) {
+                settingsChanged = true;
+            }
+            if (ImGui::SliderFloat("Alpha", &point.Alpha, 0.f, 1.f)) {
+                settingsChanged = true;
+            }
+            ImGui::PopID();
+        }
+
+        if (settingsChanged) {
+            _transferDirty = true;
+        }
+    }
+
+    void App::ApplyTransferPreset(TransferPreset preset) {
+        auto & settings = _transferSettings;
+        switch (preset) {
+        case TransferPreset::Smoke:
+            settings.LowThreshold = 0.f;
+            settings.HighThreshold = 1.f;
+            settings.Gamma = 1.2f;
+            settings.OverallAlpha = 0.7f;
+            settings.ControlPoints = std::array<TransferControlPoint, 4> {
+                TransferControlPoint{0.f, glm::vec3(0.05f, 0.05f, 0.07f), 0.05f},
+                TransferControlPoint{0.35f, glm::vec3(0.2f, 0.2f, 0.25f), 0.25f},
+                TransferControlPoint{0.7f, glm::vec3(0.6f, 0.45f, 0.3f), 0.65f},
+                TransferControlPoint{1.f, glm::vec3(0.95f, 0.85f, 0.4f), 1.f},
+            };
+            break;
+        case TransferPreset::Neon:
+            settings.LowThreshold = 0.f;
+            settings.HighThreshold = 0.95f;
+            settings.Gamma = 0.85f;
+            settings.OverallAlpha = 1.f;
+            settings.ControlPoints = std::array<TransferControlPoint, 4> {
+                TransferControlPoint{0.f, glm::vec3(0.05f, 0.12f, 0.35f), 0.1f},
+                TransferControlPoint{0.35f, glm::vec3(0.05f, 0.8f, 0.95f), 0.75f},
+                TransferControlPoint{0.7f, glm::vec3(0.95f, 0.05f, 0.9f), 0.85f},
+                TransferControlPoint{1.f, glm::vec3(1.f, 0.8f, 0.35f), 1.f},
+            };
+            break;
+        case TransferPreset::Heatmap:
+            settings.LowThreshold = 0.05f;
+            settings.HighThreshold = 1.f;
+            settings.Gamma = 1.4f;
+            settings.OverallAlpha = 0.95f;
+            settings.ControlPoints = std::array<TransferControlPoint, 4> {
+                TransferControlPoint{0.f, glm::vec3(0.15f, 0.15f, 0.45f), 0.12f},
+                TransferControlPoint{0.33f, glm::vec3(0.15f, 0.65f, 0.2f), 0.45f},
+                TransferControlPoint{0.66f, glm::vec3(0.95f, 0.65f, 0.05f), 0.75f},
+                TransferControlPoint{1.f, glm::vec3(0.8f, 0.1f, 0.02f), 1.f},
+            };
+            break;
+        }
+        _transferDirty = true;
+    }
+
+    glm::vec4 App::EvaluateTransferFunction(float sample) const {
+        float normalized = std::clamp(sample, 0.f, 1.f);
+        float range = _transferSettings.HighThreshold - _transferSettings.LowThreshold;
+        if (range > 0.f) {
+            normalized = (normalized - _transferSettings.LowThreshold) / range;
+            normalized = std::clamp(normalized, 0.f, 1.f);
+        }
+        float gamma = std::max(_transferSettings.Gamma, 0.01f);
+        normalized = normalized > 0.f ? std::pow(normalized, gamma) : 0.f;
+
+        auto const & points = _transferSettings.ControlPoints;
+        if (points.empty()) {
+            return glm::vec4(normalized, normalized, normalized, normalized);
+        }
+
+        auto const & first = points.front();
+        if (normalized <= first.Position) {
+            float alpha = std::clamp(first.Alpha * _transferSettings.OverallAlpha, 0.f, 1.f);
+            return glm::vec4(first.Color, alpha);
+        }
+
+        auto const & last = points.back();
+        if (normalized >= last.Position) {
+            float alpha = std::clamp(last.Alpha * _transferSettings.OverallAlpha, 0.f, 1.f);
+            return glm::vec4(last.Color, alpha);
+        }
+
+        for (std::size_t i = 1; i < points.size(); ++i) {
+            auto const & lower = points[i - 1];
+            auto const & upper = points[i];
+            if (normalized <= upper.Position) {
+                float span = upper.Position - lower.Position;
+                float t = span > 0.f ? (normalized - lower.Position) / span : 0.f;
+                glm::vec3 color = glm::mix(lower.Color, upper.Color, t);
+                float alpha = glm::mix(lower.Alpha, upper.Alpha, t);
+                alpha = std::clamp(alpha * _transferSettings.OverallAlpha, 0.f, 1.f);
+                return glm::vec4(color, alpha);
+            }
+        }
+
+        float alpha = std::clamp(last.Alpha * _transferSettings.OverallAlpha, 0.f, 1.f);
+        return glm::vec4(last.Color, alpha);
+    }
+
+    void App::UpdateTransferFunctionTexture() {
+        VCX::Engine::Texture2D<VCX::Engine::Formats::RGBA8> lut(kTransferLutSize, 1);
+        for (std::size_t i = 0; i < kTransferLutSize; ++i) {
+            float sample = static_cast<float>(i) / static_cast<float>(kTransferLutSize - 1);
+            lut.At(i, 0) = EvaluateTransferFunction(sample);
+        }
+        _transferLutTexture.UpdateSampler({
+            VCX::Engine::GL::WrapMode::Clamp,
+            VCX::Engine::GL::WrapMode::Clamp,
+            VCX::Engine::GL::WrapMode::Clamp,
+            VCX::Engine::GL::FilterMode::Linear,
+            VCX::Engine::GL::FilterMode::Linear,
+        });
+        _transferLutTexture.Update(lut);
+        _transferDirty = false;
     }
 
     void App::UpdateAudioAnalysis(float deltaTime) {
@@ -643,6 +801,11 @@ namespace VCX::Apps::SphereAudioVisualizer {
         if (_statsBuffer) {
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, _statsBuffer);
         }
+        if (_transferDirty) {
+            UpdateTransferFunctionTexture();
+        }
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, _transferLutTexture.Get());
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_3D, volumeTex);
 
@@ -653,6 +816,9 @@ namespace VCX::Apps::SphereAudioVisualizer {
         }
 
         glBindTexture(GL_TEXTURE_3D, 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
         if (_statsBuffer) {
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
         }
@@ -758,7 +924,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         ImGui::SliderFloat("Alpha Scale", &_renderSettings.AlphaScale, 0.1f, 10.f);
         ImGui::Checkbox("Enable Jitter", &_renderSettings.EnableJitter);
         int mode = static_cast<int>(_renderSettings.Mode);
-        const char * colorModes[] = { "Grayscale", "Gradient" };
+        const char * colorModes[] = { "Grayscale", "Transfer LUT" };
         if (ImGui::Combo("Color Mode", &mode, colorModes, IM_ARRAYSIZE(colorModes))) {
             _renderSettings.Mode = static_cast<ColorMode>(mode);
         }
@@ -790,6 +956,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         if (ImGui::SliderFloat("Ripple Speed", &_dynamicSettings.RippleSpeed, 0.f, 6.f)) {
             LogDynamicParam("rippleSpeed", _dynamicSettings.RippleSpeed);
         }
+
+        RenderTransferFunctionUI();
 
         ImGui::Separator();
         auto const volumeSize = _volumeData.GetVolumeSize();
