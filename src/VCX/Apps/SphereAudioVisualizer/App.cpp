@@ -262,140 +262,144 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
     void App::RenderAudioUI() {
         ImGui::Separator();
-        ImGui::Text("Audio");
-        ImGui::InputText("File", _audioPath, IM_ARRAYSIZE(_audioPath));
-        ImGui::SameLine();
-        if (ImGui::Button("Load")) {
-            bool ok = _audio.LoadFile(_audioPath);
-            if (ok) {
-                spdlog::info("Audio loaded: {}", _audioPath);
-            } else {
-                spdlog::error("Audio load failed: {}", _audio.GetLastError());
+        if (ImGui::CollapsingHeader("Audio", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Audio");
+            ImGui::InputText("File", _audioPath, IM_ARRAYSIZE(_audioPath));
+            ImGui::SameLine();
+            if (ImGui::Button("Load")) {
+                bool ok = _audio.LoadFile(_audioPath);
+                if (ok) {
+                    spdlog::info("Audio loaded: {}", _audioPath);
+                } else {
+                    spdlog::error("Audio load failed: {}", _audio.GetLastError());
+                }
+            }
+
+            if (ImGui::Button("Play")) {
+                _audio.Play();
+                spdlog::info("Audio play");
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Pause")) {
+                _audio.Pause();
+                spdlog::info("Audio pause");
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Stop")) {
+                _audio.Stop();
+                spdlog::info("Audio stop");
+            }
+
+            if (ImGui::Checkbox("Loop", &_audioLoop)) {
+                _audio.SetLoop(_audioLoop);
+            }
+
+            float timeNow = _audio.GetTimeSeconds();
+            float duration = _audio.GetDurationSeconds();
+            ImGui::Text("Time: %.2f / %.2f s", timeNow, duration);
+            ImGui::Text("Rate: %u Hz, Channels: %u", _audio.GetSampleRate(), _audio.GetChannels());
+            int maxHeadroom = _fftSize * 2;
+            if (ImGui::SliderInt("Headroom", &_audioHeadroom, 0, maxHeadroom)) {
+                _audioHeadroom = std::clamp(_audioHeadroom, 0, maxHeadroom);
+            }
+            float fill = _audio.GetRingFillRatio();
+            ImGui::ProgressBar(fill, ImVec2(-1.f, 0.f), "Ring fill");
+            ImGui::Text("Ring strategy: overwrite-old");
+            ImGui::Text("Readable: %zu", _audioReadable);
+            ImGui::Text("FFT updates/s: %zu", _fftUpdatesPerSecond);
+            ImGui::Text("Window RMS: %.5f", _audioWindowRms);
+            ImGui::Text("FFT size: %d", _fftSize);
+            ImGui::Text("FFT time: %.3f ms", _analysisState.LastFftMs);
+            ImGui::Text("Energies min/max/avg: %.3f / %.3f / %.3f",
+                _analysisState.EnergyMin,
+                _analysisState.EnergyMax,
+                _analysisState.EnergyAvg);
+            ImGui::Text("AGC gain: %.3f", _analysisState.AgcGain);
+            ImGui::PlotLines("Oscilloscope",
+                _oscilloscopePoints.data(),
+                static_cast<int>(_oscilloscopePoints.size()),
+                0,
+                nullptr,
+                -1.f,
+                1.f,
+                ImVec2(-1.f, 80.f));
+            ImGui::Text("overrunWrites: %llu, droppedSamples: %llu, underrunReads: %llu",
+                static_cast<unsigned long long>(_audio.GetOverrunWrites()),
+                static_cast<unsigned long long>(_audio.GetDroppedSamples()),
+                static_cast<unsigned long long>(_audio.GetUnderrunReads()));
+            if (!_audio.GetLastError().empty()) {
+                ImGui::TextColored(ImVec4(1.f, 0.f, 0.f, 1.f), "%s", _audio.GetLastError().c_str());
+            }
+            if (_audio.UsingSineFallback()) {
+                ImGui::Text("Fallback: sine test (load failed)");
             }
         }
 
-        if (ImGui::Button("Play")) {
-            _audio.Play();
-            spdlog::info("Audio play");
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Pause")) {
-            _audio.Pause();
-            spdlog::info("Audio pause");
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Stop")) {
-            _audio.Stop();
-            spdlog::info("Audio stop");
-        }
-
-        if (ImGui::Checkbox("Loop", &_audioLoop)) {
-            _audio.SetLoop(_audioLoop);
-        }
-
-        float timeNow = _audio.GetTimeSeconds();
-        float duration = _audio.GetDurationSeconds();
-        ImGui::Text("Time: %.2f / %.2f s", timeNow, duration);
-        ImGui::Text("Rate: %u Hz, Channels: %u", _audio.GetSampleRate(), _audio.GetChannels());
-        int maxHeadroom = _fftSize * 2;
-        if (ImGui::SliderInt("Headroom", &_audioHeadroom, 0, maxHeadroom)) {
-            _audioHeadroom = std::clamp(_audioHeadroom, 0, maxHeadroom);
-        }
-        float fill = _audio.GetRingFillRatio();
-        ImGui::ProgressBar(fill, ImVec2(-1.f, 0.f), "Ring fill");
-        ImGui::Text("Ring strategy: overwrite-old");
-        ImGui::Text("Readable: %zu", _audioReadable);
-        ImGui::Text("FFT updates/s: %zu", _fftUpdatesPerSecond);
-        ImGui::Text("Window RMS: %.5f", _audioWindowRms);
-        ImGui::Text("FFT size: %d", _fftSize);
-        ImGui::Text("FFT time: %.3f ms", _analysisState.LastFftMs);
-        ImGui::Text("Energies min/max/avg: %.3f / %.3f / %.3f",
-            _analysisState.EnergyMin,
-            _analysisState.EnergyMax,
-            _analysisState.EnergyAvg);
-        ImGui::Text("AGC gain: %.3f", _analysisState.AgcGain);
-        ImGui::PlotLines("Oscilloscope",
-            _oscilloscopePoints.data(),
-            static_cast<int>(_oscilloscopePoints.size()),
-            0,
-            nullptr,
-            -1.f,
-            1.f,
-            ImVec2(-1.f, 80.f));
-        ImGui::Text("overrunWrites: %llu, droppedSamples: %llu, underrunReads: %llu",
-            static_cast<unsigned long long>(_audio.GetOverrunWrites()),
-            static_cast<unsigned long long>(_audio.GetDroppedSamples()),
-            static_cast<unsigned long long>(_audio.GetUnderrunReads()));
-        if (!_audio.GetLastError().empty()) {
-            ImGui::TextColored(ImVec4(1.f, 0.f, 0.f, 1.f), "%s", _audio.GetLastError().c_str());
-        }
-        if (_audio.UsingSineFallback()) {
-            ImGui::Text("Fallback: sine test (load failed)");
-        }
-
         ImGui::Separator();
-        ImGui::Text("FFT / Analysis");
-        const char * fftSizeLabels[] = { "512", "1024", "2048", "4096" };
-        if (ImGui::Combo("FFT Size", &_analysisSettings.FftSizeIndex, fftSizeLabels, IM_ARRAYSIZE(fftSizeLabels))) {
-            _analysisSettings.FftSizeIndex = ClampFftIndex(_analysisSettings.FftSizeIndex);
-        }
+        if (ImGui::CollapsingHeader("FFT / Analysis", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("FFT / Analysis");
+            const char * fftSizeLabels[] = { "512", "1024", "2048", "4096" };
+            if (ImGui::Combo("FFT Size", &_analysisSettings.FftSizeIndex, fftSizeLabels, IM_ARRAYSIZE(fftSizeLabels))) {
+                _analysisSettings.FftSizeIndex = ClampFftIndex(_analysisSettings.FftSizeIndex);
+            }
 
-        const char * windowNames[] = { "Hann", "Hamming" };
-        int windowType = static_cast<int>(_analysisSettings.Window);
-        if (ImGui::Combo("Window", &windowType, windowNames, IM_ARRAYSIZE(windowNames))) {
-            _analysisSettings.Window = static_cast<WindowType>(windowType);
-        }
+            const char * windowNames[] = { "Hann", "Hamming" };
+            int windowType = static_cast<int>(_analysisSettings.Window);
+            if (ImGui::Combo("Window", &windowType, windowNames, IM_ARRAYSIZE(windowNames))) {
+                _analysisSettings.Window = static_cast<WindowType>(windowType);
+            }
 
-        const char * mappingNames[] = { "Linear", "Log" };
-        int mappingType = static_cast<int>(_analysisSettings.Mapping);
-        if (ImGui::Combo("Mapping", &mappingType, mappingNames, IM_ARRAYSIZE(mappingNames))) {
-            _analysisSettings.Mapping = static_cast<MappingType>(mappingType);
-        }
+            const char * mappingNames[] = { "Linear", "Log" };
+            int mappingType = static_cast<int>(_analysisSettings.Mapping);
+            if (ImGui::Combo("Mapping", &mappingType, mappingNames, IM_ARRAYSIZE(mappingNames))) {
+                _analysisSettings.Mapping = static_cast<MappingType>(mappingType);
+            }
 
-        const char * aggregateNames[] = { "Average", "Max" };
-        int aggregateType = static_cast<int>(_analysisSettings.Aggregate);
-        if (ImGui::Combo("Band Aggregate", &aggregateType, aggregateNames, IM_ARRAYSIZE(aggregateNames))) {
-            _analysisSettings.Aggregate = static_cast<AggregateType>(aggregateType);
-        }
+            const char * aggregateNames[] = { "Average", "Max" };
+            int aggregateType = static_cast<int>(_analysisSettings.Aggregate);
+            if (ImGui::Combo("Band Aggregate", &aggregateType, aggregateNames, IM_ARRAYSIZE(aggregateNames))) {
+                _analysisSettings.Aggregate = static_cast<AggregateType>(aggregateType);
+            }
 
-        const char * bandOptions[] = { "8", "16", "32" };
-        int bandIndex = (_analysisSettings.NumBands == 8) ? 0 : (_analysisSettings.NumBands == 32 ? 2 : 1);
-        if (ImGui::Combo("Bands", &bandIndex, bandOptions, IM_ARRAYSIZE(bandOptions))) {
-            _analysisSettings.NumBands = bandIndex == 0 ? 8 : (bandIndex == 2 ? 32 : 16);
-        }
+            const char * bandOptions[] = { "8", "16", "32" };
+            int bandIndex = (_analysisSettings.NumBands == 8) ? 0 : (_analysisSettings.NumBands == 32 ? 2 : 1);
+            if (ImGui::Combo("Bands", &bandIndex, bandOptions, IM_ARRAYSIZE(bandOptions))) {
+                _analysisSettings.NumBands = bandIndex == 0 ? 8 : (bandIndex == 2 ? 32 : 16);
+            }
 
-        ImGui::SliderFloat("Min Freq (Hz)", &_analysisSettings.MinFrequency, 1.f, std::max(1.f, _audio.GetSampleRate() * 0.5f));
-        ImGui::SliderFloat("Compress k", &_analysisSettings.CompressK, 0.f, 32.f);
-        ImGui::Checkbox("Show Spectrum", &_analysisSettings.ShowSpectrum);
+            ImGui::SliderFloat("Min Freq (Hz)", &_analysisSettings.MinFrequency, 1.f, std::max(1.f, _audio.GetSampleRate() * 0.5f));
+            ImGui::SliderFloat("Compress k", &_analysisSettings.CompressK, 0.f, 32.f);
+            ImGui::Checkbox("Show Spectrum", &_analysisSettings.ShowSpectrum);
 
-        bool agcEnabled = _analysisSettings.AgcEnabled;
-        if (ImGui::Checkbox("AGC Enabled", &agcEnabled)) {
-            _analysisSettings.AgcEnabled = agcEnabled;
-        }
-        ImGui::SliderFloat("AGC Target", &_analysisSettings.AgcTarget, 0.05f, 2.f);
-        ImGui::SliderFloat("AGC Attack (s)", &_analysisSettings.AgcAttack, 0.01f, 1.f);
-        ImGui::SliderFloat("AGC Release (s)", &_analysisSettings.AgcRelease, 0.05f, 2.f);
-        ImGui::SliderFloat("AGC Max Gain", &_analysisSettings.AgcMaxGain, 1.f, 40.f);
+            bool agcEnabled = _analysisSettings.AgcEnabled;
+            if (ImGui::Checkbox("AGC Enabled", &agcEnabled)) {
+                _analysisSettings.AgcEnabled = agcEnabled;
+            }
+            ImGui::SliderFloat("AGC Target", &_analysisSettings.AgcTarget, 0.05f, 2.f);
+            ImGui::SliderFloat("AGC Attack (s)", &_analysisSettings.AgcAttack, 0.01f, 1.f);
+            ImGui::SliderFloat("AGC Release (s)", &_analysisSettings.AgcRelease, 0.05f, 2.f);
+            ImGui::SliderFloat("AGC Max Gain", &_analysisSettings.AgcMaxGain, 1.f, 40.f);
 
-        if (!_analysisState.BandEnergies.empty()) {
-            ImGui::PlotHistogram("Energies",
-                _analysisState.BandEnergies.data(),
-                static_cast<int>(_analysisState.BandEnergies.size()),
-                0,
-                nullptr,
-                0.f,
-                1.f,
-                ImVec2(-1.f, 120.f));
-        }
-        if (_analysisSettings.ShowSpectrum && !_analysisState.SpectrumDownsample.empty()) {
-            ImGui::PlotLines("Spectrum",
-                _analysisState.SpectrumDownsample.data(),
-                static_cast<int>(_analysisState.SpectrumDownsample.size()),
-                0,
-                nullptr,
-                0.f,
-                0.1f,
-                ImVec2(-1.f, 80.f));
+            if (!_analysisState.BandEnergies.empty()) {
+                ImGui::PlotHistogram("Energies",
+                    _analysisState.BandEnergies.data(),
+                    static_cast<int>(_analysisState.BandEnergies.size()),
+                    0,
+                    nullptr,
+                    0.f,
+                    1.f,
+                    ImVec2(-1.f, 120.f));
+            }
+            if (_analysisSettings.ShowSpectrum && !_analysisState.SpectrumDownsample.empty()) {
+                ImGui::PlotLines("Spectrum",
+                    _analysisState.SpectrumDownsample.data(),
+                    static_cast<int>(_analysisState.SpectrumDownsample.size()),
+                    0,
+                    nullptr,
+                    0.f,
+                    0.1f,
+                    ImVec2(-1.f, 80.f));
+            }
         }
     }
 
