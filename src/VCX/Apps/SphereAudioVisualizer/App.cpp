@@ -4,10 +4,16 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstring>
+#include <exception>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <numeric>
+#include <string>
 #include <vector>
 
 #include <glad/glad.h>
@@ -17,6 +23,8 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
+
+#include <yaml-cpp/yaml.h>
 
 #include "Assets/bundled.h"
 #include "Engine/app.h"
@@ -206,10 +214,332 @@ namespace VCX::Apps::SphereAudioVisualizer {
             float updated = alpha * currentGain + (1.f - alpha) * target;
             return std::clamp(updated, 1.f / settings.AgcMaxGain, settings.AgcMaxGain);
         }
+
+        char const * WindowTypeName(App::WindowType type) {
+            switch (type) {
+            case App::WindowType::Hamming:
+                return "Hamming";
+            case App::WindowType::Hann:
+            default:
+                return "Hann";
+            }
+        }
+
+        bool TryParseWindowType(std::string const & value, App::WindowType & out) {
+            if (value == "Hamming") {
+                out = App::WindowType::Hamming;
+                return true;
+            }
+            if (value == "Hann") {
+                out = App::WindowType::Hann;
+                return true;
+            }
+            return false;
+        }
+
+        char const * MappingTypeName(App::MappingType type) {
+            switch (type) {
+            case App::MappingType::Log:
+                return "Log";
+            case App::MappingType::Linear:
+            default:
+                return "Linear";
+            }
+        }
+
+        bool TryParseMappingType(std::string const & value, App::MappingType & out) {
+            if (value == "Log") {
+                out = App::MappingType::Log;
+                return true;
+            }
+            if (value == "Linear") {
+                out = App::MappingType::Linear;
+                return true;
+            }
+            return false;
+        }
+
+        std::string TransferPresetName(App::TransferPreset preset) {
+            switch (preset) {
+            case App::TransferPreset::Neon:
+                return "Neon";
+            case App::TransferPreset::Heatmap:
+                return "Heatmap";
+            case App::TransferPreset::Smoke:
+            default:
+                return "Smoke";
+            }
+        }
+
+        bool TryParseTransferPreset(std::string const & value, App::TransferPreset & out) {
+            if (value == "Neon") {
+                out = App::TransferPreset::Neon;
+                return true;
+            }
+            if (value == "Heatmap") {
+                out = App::TransferPreset::Heatmap;
+                return true;
+            }
+            if (value == "Smoke") {
+                out = App::TransferPreset::Smoke;
+                return true;
+            }
+            return false;
+        }
+
+        glm::vec3 NodeToVec3(YAML::Node const & node, glm::vec3 const & fallback) {
+            if (!node || !node.IsSequence() || node.size() < 3) {
+                return fallback;
+            }
+            return glm::vec3(node[0].as<float>(fallback.r), node[1].as<float>(fallback.g), node[2].as<float>(fallback.b));
+        }
+    }
+
+    char const * App::ColorModeName(App::ColorMode mode) {
+        switch (mode) {
+        case App::ColorMode::Gradient:
+            return "TransferLUT";
+        case App::ColorMode::Gray:
+        default:
+            return "Grayscale";
+        }
+    }
+
+    bool App::TryParseColorMode(std::string const & value, App::ColorMode & out) {
+        if (value == "TransferLUT") {
+            out = App::ColorMode::Gradient;
+            return true;
+        }
+        if (value == "Grayscale") {
+            out = App::ColorMode::Gray;
+            return true;
+        }
+        return false;
     }
 
     void EnsureLogger() {
         SetupLogger();
+    }
+
+    std::filesystem::path App::ConfigFilePath() const {
+        return std::filesystem::current_path() / "SphereVisConfig.yaml";
+    }
+
+    void App::LoadConfig() {
+        auto const path = ConfigFilePath();
+        if (!std::filesystem::exists(path)) {
+            spdlog::info("Config {} missing, using defaults.", path.string());
+            ApplyTransferPreset(_transferPreset);
+            _transferDirty = true;
+            _volumeData.Regenerate();
+            return;
+        }
+
+        try {
+            auto const root = YAML::LoadFile(path.string());
+
+            auto const updateString = [&]<std::size_t N>(YAML::Node const & node, char (&dst)[N]) {
+                if (!node) {
+                    dst[0] = '\0';
+                    return;
+                }
+                auto const str = node.as<std::string>("");
+                std::strncpy(dst, str.c_str(), N);
+                dst[N - 1] = '\0';
+            };
+
+            updateString(root["lastAudioPath"], _audioPath);
+            if (_audioPath[0] != '\0') {
+                if (!_audio.LoadFile(_audioPath)) {
+                    spdlog::warn("Failed to load audio from config path {}", _audioPath);
+                }
+            }
+
+            if (auto audioNode = root["audio"]) {
+                _audioLoop = audioNode["loop"].as<bool>(_audioLoop);
+                _audio.SetLoop(_audioLoop);
+                _monoMixMode = audioNode["monoMixMode"].as<bool>(_monoMixMode);
+                _audio.SetMonoMixMode(_monoMixMode);
+            }
+
+            if (auto analysisNode = root["analysis"]) {
+                if (auto fftNode = analysisNode["fftSize"]) {
+                    int const fftSize = fftNode.as<int>(CurrentFftSize(_analysisSettings));
+                    auto const iter = std::find(kFftSizes.begin(), kFftSizes.end(), fftSize);
+                    if (iter != kFftSizes.end()) {
+                        _analysisSettings.FftSizeIndex = static_cast<int>(std::distance(kFftSizes.begin(), iter));
+                    }
+                }
+                _analysisSettings.NumBands = analysisNode["numBands"].as<int>(_analysisSettings.NumBands);
+                _analysisSettings.NumBands = std::clamp(_analysisSettings.NumBands, 1, 256);
+                if (auto windowNode = analysisNode["windowType"]) {
+                    App::WindowType type;
+                    if (TryParseWindowType(windowNode.as<std::string>(), type)) {
+                        _analysisSettings.Window = type;
+                    }
+                }
+                if (auto mappingNode = analysisNode["mappingType"]) {
+                    App::MappingType mapping;
+                    if (TryParseMappingType(mappingNode.as<std::string>(), mapping)) {
+                        _analysisSettings.Mapping = mapping;
+                    }
+                }
+                _analysisSettings.CompressK = analysisNode["compressK"].as<float>(_analysisSettings.CompressK);
+                if (auto agcNode = analysisNode["agc"]) {
+                    _analysisSettings.AgcEnabled = agcNode["enabled"].as<bool>(_analysisSettings.AgcEnabled);
+                    _analysisSettings.AgcTarget = agcNode["target"].as<float>(_analysisSettings.AgcTarget);
+                    _analysisSettings.AgcAttack = agcNode["attack"].as<float>(_analysisSettings.AgcAttack);
+                    _analysisSettings.AgcRelease = agcNode["release"].as<float>(_analysisSettings.AgcRelease);
+                    _analysisSettings.AgcMaxGain = agcNode["maxGain"].as<float>(_analysisSettings.AgcMaxGain);
+                }
+            }
+
+            if (auto volumeNode = root["volume"]) {
+                auto settings = _volumeData.GetSettings();
+                settings.VolumeSize = static_cast<std::size_t>(volumeNode["volumeSize"].as<int>(static_cast<int>(settings.VolumeSize)));
+                settings.VolumeSize = std::clamp(settings.VolumeSize, std::size_t(32), std::size_t(256));
+                settings.AmpScale = volumeNode["ampScale"].as<float>(settings.AmpScale);
+                settings.ThicknessScale = volumeNode["thicknessScale"].as<float>(settings.ThicknessScale);
+                _volumeData.SetSettings(settings);
+            }
+
+            if (auto renderNode = root["render"]) {
+                _renderSettings.StepSize = renderNode["stepSize"].as<float>(_renderSettings.StepSize);
+                _renderSettings.MaxSteps = renderNode["maxSteps"].as<int>(_renderSettings.MaxSteps);
+                _renderSettings.MaxSteps = std::clamp(_renderSettings.MaxSteps, 16, 512);
+                _renderSettings.AlphaScale = renderNode["alphaScale"].as<float>(_renderSettings.AlphaScale);
+                _renderSettings.AlphaScale = std::clamp(_renderSettings.AlphaScale, 0.1f, 10.f);
+            }
+
+            if (auto dynamicNode = root["dynamic"]) {
+                _dynamicSettings.NoiseStrength = dynamicNode["noiseStrength"].as<float>(_dynamicSettings.NoiseStrength);
+                _dynamicSettings.NoiseFreq = dynamicNode["noiseFreq"].as<float>(_dynamicSettings.NoiseFreq);
+                _dynamicSettings.NoiseSpeed = dynamicNode["noiseSpeed"].as<float>(_dynamicSettings.NoiseSpeed);
+                _dynamicSettings.RippleAmp = dynamicNode["rippleAmp"].as<float>(_dynamicSettings.RippleAmp);
+                _dynamicSettings.RippleFreq = dynamicNode["rippleFreq"].as<float>(_dynamicSettings.RippleFreq);
+                _dynamicSettings.RippleSpeed = dynamicNode["rippleSpeed"].as<float>(_dynamicSettings.RippleSpeed);
+            }
+
+            if (auto transferNode = root["transferFunction"]) {
+                if (auto presetNode = transferNode["preset"]) {
+                    App::TransferPreset preset;
+                    if (TryParseTransferPreset(presetNode.as<std::string>(), preset)) {
+                        _transferPreset = preset;
+                    }
+                }
+                _transferSettings.LowThreshold = transferNode["lowThreshold"].as<float>(_transferSettings.LowThreshold);
+                _transferSettings.HighThreshold = transferNode["highThreshold"].as<float>(_transferSettings.HighThreshold);
+                _transferSettings.Gamma = transferNode["gamma"].as<float>(_transferSettings.Gamma);
+                _transferSettings.OverallAlpha = transferNode["overallAlpha"].as<float>(_transferSettings.OverallAlpha);
+                if (auto controlPoints = transferNode["controlPoints"]) {
+                    for (std::size_t i = 0; i < _transferSettings.ControlPoints.size() && i < controlPoints.size(); ++i) {
+                        auto & dst = _transferSettings.ControlPoints[i];
+                        auto const & src = controlPoints[static_cast<int>(i)];
+                        dst.Position = src["position"].as<float>(dst.Position);
+                        dst.Color = NodeToVec3(src["color"], dst.Color);
+                        dst.Alpha = src["alpha"].as<float>(dst.Alpha);
+                    }
+                }
+            }
+
+            _transferDirty = true;
+            _volumeData.Regenerate();
+            spdlog::info("Config loaded from {} (audio '{}', fft {}, bands {}, preset {})",
+                path.string(),
+                _audioPath,
+                CurrentFftSize(_analysisSettings),
+                _analysisSettings.NumBands,
+                TransferPresetName(_transferPreset));
+        } catch (YAML::Exception const & ex) {
+            spdlog::error("Config load failed {}: {}", path.string(), ex.what());
+            ApplyTransferPreset(_transferPreset);
+            _transferDirty = true;
+            _volumeData.Regenerate();
+        }
+    }
+
+    void App::SaveConfig() {
+        auto const path = ConfigFilePath();
+        try {
+            if (auto const parent = path.parent_path(); !parent.empty() && !std::filesystem::exists(parent)) {
+                std::filesystem::create_directories(parent);
+            }
+            YAML::Node root;
+            root["lastAudioPath"] = std::string(_audioPath);
+            YAML::Node audioNode;
+            audioNode["loop"] = _audioLoop;
+            audioNode["monoMixMode"] = _monoMixMode;
+            root["audio"] = audioNode;
+
+            YAML::Node analysisNode;
+            analysisNode["fftSize"] = CurrentFftSize(_analysisSettings);
+            analysisNode["numBands"] = _analysisSettings.NumBands;
+            analysisNode["windowType"] = WindowTypeName(_analysisSettings.Window);
+            analysisNode["mappingType"] = MappingTypeName(_analysisSettings.Mapping);
+            analysisNode["compressK"] = _analysisSettings.CompressK;
+            YAML::Node agcNode;
+            agcNode["enabled"] = _analysisSettings.AgcEnabled;
+            agcNode["target"] = _analysisSettings.AgcTarget;
+            agcNode["attack"] = _analysisSettings.AgcAttack;
+            agcNode["release"] = _analysisSettings.AgcRelease;
+            agcNode["maxGain"] = _analysisSettings.AgcMaxGain;
+            analysisNode["agc"] = agcNode;
+            root["analysis"] = analysisNode;
+
+            YAML::Node volumeNode;
+            auto const volumeSettings = _volumeData.GetSettings();
+            volumeNode["volumeSize"] = static_cast<int>(volumeSettings.VolumeSize);
+            volumeNode["ampScale"] = volumeSettings.AmpScale;
+            volumeNode["thicknessScale"] = volumeSettings.ThicknessScale;
+            root["volume"] = volumeNode;
+
+            YAML::Node renderNode;
+            renderNode["stepSize"] = _renderSettings.StepSize;
+            renderNode["maxSteps"] = _renderSettings.MaxSteps;
+            renderNode["alphaScale"] = _renderSettings.AlphaScale;
+            root["render"] = renderNode;
+
+            YAML::Node dynamicNode;
+            dynamicNode["noiseStrength"] = _dynamicSettings.NoiseStrength;
+            dynamicNode["noiseFreq"] = _dynamicSettings.NoiseFreq;
+            dynamicNode["noiseSpeed"] = _dynamicSettings.NoiseSpeed;
+            dynamicNode["rippleAmp"] = _dynamicSettings.RippleAmp;
+            dynamicNode["rippleFreq"] = _dynamicSettings.RippleFreq;
+            dynamicNode["rippleSpeed"] = _dynamicSettings.RippleSpeed;
+            root["dynamic"] = dynamicNode;
+
+            YAML::Node transferNode;
+            transferNode["preset"] = TransferPresetName(_transferPreset);
+            transferNode["lowThreshold"] = _transferSettings.LowThreshold;
+            transferNode["highThreshold"] = _transferSettings.HighThreshold;
+            transferNode["gamma"] = _transferSettings.Gamma;
+            transferNode["overallAlpha"] = _transferSettings.OverallAlpha;
+            YAML::Node controlPoints;
+            for (auto const & point : _transferSettings.ControlPoints) {
+                YAML::Node cp;
+                cp["position"] = point.Position;
+                YAML::Node color;
+                color.push_back(point.Color.r);
+                color.push_back(point.Color.g);
+                color.push_back(point.Color.b);
+                cp["color"] = color;
+                cp["alpha"] = point.Alpha;
+                controlPoints.push_back(cp);
+            }
+            transferNode["controlPoints"] = controlPoints;
+            root["transferFunction"] = transferNode;
+
+            std::ofstream out(path);
+            out << root;
+            spdlog::info("Config saved to {} (audio '{}', fft {}, bands {}, preset {})",
+                path.string(),
+                _audioPath,
+                CurrentFftSize(_analysisSettings),
+                _analysisSettings.NumBands,
+                TransferPresetName(_transferPreset));
+        } catch (std::exception const & ex) {
+            spdlog::error("Config save failed {}: {}", path.string(), ex.what());
+        }
     }
 
     App::App():
@@ -238,8 +568,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         _volumeProgram.GetUniforms().SetByName("uVolumeTexture", 0);
         _transferLutTexture.SetUnit(1);
         _volumeProgram.GetUniforms().SetByName("uTransferLut", 1);
-        ApplyTransferPreset(_transferPreset);
-        _volumeData.Regenerate();
+        _audio.SetMonoMixMode(_monoMixMode);
+        LoadConfig();
     }
 
     App::~App() {
@@ -298,6 +628,9 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
             if (ImGui::Checkbox("Loop", &_audioLoop)) {
                 _audio.SetLoop(_audioLoop);
+            }
+            if (ImGui::Checkbox("Mono Mix", &_monoMixMode)) {
+                _audio.SetMonoMixMode(_monoMixMode);
             }
 
             float timeNow = _audio.GetTimeSeconds();
@@ -458,6 +791,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
     }
 
     void App::ApplyTransferPreset(TransferPreset preset) {
+        _transferPreset = preset;
         auto & settings = _transferSettings;
         switch (preset) {
         case TransferPreset::Smoke:
@@ -864,7 +1198,11 @@ namespace VCX::Apps::SphereAudioVisualizer {
         ImGui::Begin("Sphere Audio Visualizer");
         ImGui::Text("FPS: %.1f", CurrentFps());
         if (ImGui::Button("Reload Config")) {
-            spdlog::info("Reload Config requested.");
+            LoadConfig();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Save Config")) {
+            SaveConfig();
         }
         ImGui::SliderFloat("alpha", &_alpha, 0.f, 1.f);
         ImGui::Separator();

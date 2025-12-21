@@ -183,6 +183,14 @@ namespace VCX::Apps::SphereAudioVisualizer {
         _loop.store(loop);
     }
 
+    void AudioFilePlayer::SetMonoMixMode(bool monoMix) {
+        _monoMixMode.store(monoMix);
+    }
+
+    bool AudioFilePlayer::GetMonoMixMode() const {
+        return _monoMixMode.load();
+    }
+
     void AudioFilePlayer::DataCallback(ma_device * device, void * output, void const *, ma_uint32 frameCount) {
         auto * self = reinterpret_cast<AudioFilePlayer *>(device->pUserData);
         if (self) {
@@ -247,12 +255,19 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
             // Write mono samples to ring buffer
             _scratch.resize(framesRead);
+            bool const monoMix = _monoMixMode.load();
             for (ma_uint32 i = 0; i < framesRead; ++i) {
-                float accum = 0.f;
-                for (ma_uint32 c = 0; c < channels; ++c) {
-                    accum += outPtr[i * channels + c];
+                float value = 0.f;
+                if (monoMix) {
+                    float accum = 0.f;
+                    for (ma_uint32 c = 0; c < channels; ++c) {
+                        accum += outPtr[i * channels + c];
+                    }
+                    value = accum / float(channels);
+                } else if (channels > 0) {
+                    value = outPtr[i * channels];
                 }
-                _scratch[i] = accum / float(channels);
+                _scratch[i] = value;
             }
             WriteRing(_scratch.data(), framesRead);
 

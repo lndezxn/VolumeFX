@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -26,6 +27,11 @@ namespace VCX::Apps::SphereAudioVisualizer {
         enum class WindowType : int { Hann, Hamming };
         enum class MappingType : int { Linear, Log };
         enum class AggregateType : int { Average, Max };
+        enum class TransferPreset : int {
+            Smoke = 0,
+            Neon,
+            Heatmap,
+        };
 
         struct AudioAnalysisSettings {
             int FftSizeIndex = 2; // 2048 by default
@@ -97,12 +103,6 @@ namespace VCX::Apps::SphereAudioVisualizer {
             PerturbMode Mode    = PerturbMode::Ripple;
         };
 
-        enum class TransferPreset : int {
-            Smoke = 0,
-            Neon,
-            Heatmap,
-        };
-
         struct TransferControlPoint {
             float Position = 0.f;
             glm::vec3 Color = glm::vec3(0.4f);
@@ -131,12 +131,18 @@ namespace VCX::Apps::SphereAudioVisualizer {
         void UpdateTransferFunctionTexture();
         void ApplyTransferPreset(TransferPreset preset);
         glm::vec4 EvaluateTransferFunction(float sample) const;
+        static char const * ColorModeName(ColorMode mode);
+        static bool TryParseColorMode(std::string const & value, ColorMode & out);
+        void LoadConfig();
+        void SaveConfig();
+        std::filesystem::path ConfigFilePath() const;
 
         float _alpha;
         SphereVolumeData _volumeData;
         AudioFilePlayer _audio;
         char _audioPath[512] = "";
         bool _audioLoop = false;
+        bool _monoMixMode = true;
         AudioAnalysisSettings _analysisSettings;
         AudioAnalysisState _analysisState;
         kiss_fft_cfg _fftCfg = nullptr;

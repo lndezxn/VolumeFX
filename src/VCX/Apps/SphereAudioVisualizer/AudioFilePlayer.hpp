@@ -19,11 +19,13 @@ namespace VCX::Apps::SphereAudioVisualizer {
         void Pause();
         void Stop();
         void SetLoop(bool loop);
+        void SetMonoMixMode(bool monoMix);
 
         bool IsLoaded() const;
         bool IsPlaying() const;
         bool IsLooping() const;
         bool UsingSineFallback() const;
+        bool GetMonoMixMode() const;
 
         float GetTimeSeconds() const;
         float GetDurationSeconds() const;
@@ -90,6 +92,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         std::size_t    _ringCapacity = 0;
         std::atomic<std::size_t> _ringWrite{0};
         std::atomic<std::size_t> _ringRead{0};
+        std::atomic<bool> _monoMixMode{true};
         std::mutex    _mutex; // protects decoder seek/reset during load/stop
 
         static constexpr float kTau = 6.28318530718f;
