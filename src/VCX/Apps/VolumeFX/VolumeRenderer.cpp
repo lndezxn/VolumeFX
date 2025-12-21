@@ -19,15 +19,17 @@ namespace {
     using VCX::Apps::VolumeFX::VolumeRenderer;
     using Vertex = VolumeRenderer::Vertex;
 
+    constexpr float kBoxExtent = 1.2f;
+
     constexpr std::array<Vertex, 8> c_CubeVertices { {
-        { .Position { -0.8f, -0.8f,  0.8f }, .Color { 0.75f, 0.36f, 0.95f } },
-        { .Position {  0.8f, -0.8f,  0.8f }, .Color { 0.36f, 0.82f, 0.98f } },
-        { .Position {  0.8f,  0.8f,  0.8f }, .Color { 0.25f, 0.95f, 0.62f } },
-        { .Position { -0.8f,  0.8f,  0.8f }, .Color { 0.98f, 0.78f, 0.36f } },
-        { .Position { -0.8f, -0.8f, -0.8f }, .Color { 0.72f, 0.32f, 0.95f } },
-        { .Position {  0.8f, -0.8f, -0.8f }, .Color { 0.32f, 0.76f, 0.95f } },
-        { .Position {  0.8f,  0.8f, -0.8f }, .Color { 0.28f, 0.95f, 0.76f } },
-        { .Position { -0.8f,  0.8f, -0.8f }, .Color { 0.95f, 0.62f, 0.28f } },
+        { .Position { -kBoxExtent, -kBoxExtent,  kBoxExtent }, .Color { 0.75f, 0.36f, 0.95f } },
+        { .Position {  kBoxExtent, -kBoxExtent,  kBoxExtent }, .Color { 0.36f, 0.82f, 0.98f } },
+        { .Position {  kBoxExtent,  kBoxExtent,  kBoxExtent }, .Color { 0.25f, 0.95f, 0.62f } },
+        { .Position { -kBoxExtent,  kBoxExtent,  kBoxExtent }, .Color { 0.98f, 0.78f, 0.36f } },
+        { .Position { -kBoxExtent, -kBoxExtent, -kBoxExtent }, .Color { 0.72f, 0.32f, 0.95f } },
+        { .Position {  kBoxExtent, -kBoxExtent, -kBoxExtent }, .Color { 0.32f, 0.76f, 0.95f } },
+        { .Position {  kBoxExtent,  kBoxExtent, -kBoxExtent }, .Color { 0.28f, 0.95f, 0.76f } },
+        { .Position { -kBoxExtent,  kBoxExtent, -kBoxExtent }, .Color { 0.95f, 0.62f, 0.28f } },
     } };
 
     constexpr std::array<std::uint32_t, 36> c_CubeIndices { {
@@ -69,8 +71,8 @@ namespace VCX::Apps::VolumeFX {
         float const spin = static_cast<float>(glfwGetTime() * 0.25);
         glm::mat4 const model = glm::rotate(glm::mat4(1.0f), spin, glm::vec3(0.0f, 1.0f, 0.0f));
         glm::mat4 const modelInv = glm::inverse(model);
-        glm::vec3 const boxMin(-0.8f);
-        glm::vec3 const boxMax(0.8f);
+        glm::vec3 const boxMin(-kBoxExtent);
+        glm::vec3 const boxMax(kBoxExtent);
 
         auto & uniforms = _program.GetUniforms();
         uniforms.SetByName("u_Model", model);

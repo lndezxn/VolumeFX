@@ -24,13 +24,16 @@ namespace VCX::Apps::VolumeFX {
 
     private:
         void destroy();
-        void createTexture(GLuint tex, int sx, int sy, int sz) const;
+        void createTexture(GLuint tex, int sx, int sy, int sz, GLint internalFormat, GLenum format, GLenum type) const;
 
         Engine::GL::UniqueProgram _injectProgram;
         Engine::GL::UniqueProgram _advectProgram;
         Engine::GL::UniqueProgram _diffuseProgram;
 
         std::array<GLuint, 2> _density { 0, 0 };
+        std::array<GLuint, 2> _velocity { 0, 0 };
+        std::array<GLuint, 2> _pressure { 0, 0 };
+        GLuint                 _divergence = 0;
         std::array<int, 3>    _size { 0, 0, 0 };
         int                   _src = 0;
         bool                  _initialized = false;

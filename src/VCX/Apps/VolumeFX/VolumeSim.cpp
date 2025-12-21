@@ -6,7 +6,10 @@
 
 namespace VCX::Apps::VolumeFX {
     namespace {
-        constexpr GLint kInternalFormat = GL_R16F;
+        constexpr GLint kDensityFormat = GL_R16F;
+        constexpr GLint kPressureFormat = GL_R16F;
+        constexpr GLint kDivergenceFormat = GL_R16F;
+        constexpr GLint kVelocityFormat = GL_RGBA16F;
     }
 
     VolumeSim::VolumeSim() :
@@ -23,18 +26,27 @@ namespace VCX::Apps::VolumeFX {
     }
 
     void VolumeSim::destroy() {
-        for (auto & tex : _density) {
-            if (tex != 0) {
-                glDeleteTextures(1, &tex);
-                tex = 0;
+        auto deleteArray = [](auto & arr) {
+            for (auto & tex : arr) {
+                if (tex != 0) {
+                    glDeleteTextures(1, &tex);
+                    tex = 0;
+                }
             }
+        };
+        deleteArray(_density);
+        deleteArray(_velocity);
+        deleteArray(_pressure);
+        if (_divergence != 0) {
+            glDeleteTextures(1, &_divergence);
+            _divergence = 0;
         }
         _size = { 0, 0, 0 };
         _src = 0;
         _initialized = false;
     }
 
-    void VolumeSim::createTexture(GLuint tex, int sx, int sy, int sz) const {
+    void VolumeSim::createTexture(GLuint tex, int sx, int sy, int sz, GLint internalFormat, GLenum format, GLenum type) const {
         glBindTexture(GL_TEXTURE_3D, tex);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -44,13 +56,13 @@ namespace VCX::Apps::VolumeFX {
         glTexImage3D(
             GL_TEXTURE_3D,
             0,
-            kInternalFormat,
+            internalFormat,
             sx,
             sy,
             sz,
             0,
-            GL_RED,
-            GL_FLOAT,
+            format,
+            type,
             nullptr);
         glBindTexture(GL_TEXTURE_3D, 0);
     }
@@ -62,10 +74,8 @@ namespace VCX::Apps::VolumeFX {
 
         destroy();
 
-        glGenTextures(static_cast<GLsizei>(_density.size()), _density.data());
-        std::vector<float> zeros(static_cast<std::size_t>(sx) * sy * sz, 0.0f);
-        for (auto tex : _density) {
-            createTexture(tex, sx, sy, sz);
+        auto clearTex = [&](GLuint tex, GLenum format, GLenum type, int components) {
+            std::vector<float> zeros(static_cast<std::size_t>(sx) * sy * sz * components, 0.0f);
             glBindTexture(GL_TEXTURE_3D, tex);
             glTexSubImage3D(
                 GL_TEXTURE_3D,
@@ -76,11 +86,30 @@ namespace VCX::Apps::VolumeFX {
                 sx,
                 sy,
                 sz,
-                GL_RED,
-                GL_FLOAT,
+                format,
+                type,
                 zeros.data());
+        };
+
+        glGenTextures(static_cast<GLsizei>(_density.size()), _density.data());
+        glGenTextures(static_cast<GLsizei>(_velocity.size()), _velocity.data());
+        glGenTextures(static_cast<GLsizei>(_pressure.size()), _pressure.data());
+        glGenTextures(1, &_divergence);
+
+        for (auto tex : _density) {
+            createTexture(tex, sx, sy, sz, kDensityFormat, GL_RED, GL_FLOAT);
+            clearTex(tex, GL_RED, GL_FLOAT, 1);
         }
-        glBindTexture(GL_TEXTURE_3D, 0);
+        for (auto tex : _velocity) {
+            createTexture(tex, sx, sy, sz, kVelocityFormat, GL_RGBA, GL_FLOAT);
+            clearTex(tex, GL_RGBA, GL_FLOAT, 4);
+        }
+        for (auto tex : _pressure) {
+            createTexture(tex, sx, sy, sz, kPressureFormat, GL_RED, GL_FLOAT);
+            clearTex(tex, GL_RED, GL_FLOAT, 1);
+        }
+        createTexture(_divergence, sx, sy, sz, kDivergenceFormat, GL_RED, GL_FLOAT);
+        clearTex(_divergence, GL_RED, GL_FLOAT, 1);
 
         _size = { sx, sy, sz };
         _src = 0;
