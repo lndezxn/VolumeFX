@@ -32,5 +32,11 @@ namespace VCX::Apps::VolumeFX {
 
         bool                   _diffuseEnabled = true;
         float                  _diffuseK = 0.05f;
+
+        float                  _forceStrength = 8.0f;
+        float                  _forceSigma = 0.10f;
+        float                  _velDamp = 0.995f;
+        int                    _jacobiIters = 45;
+        float                  _advectStrength = 3.0f;
     };
 } // namespace VCX::Apps::VolumeFX

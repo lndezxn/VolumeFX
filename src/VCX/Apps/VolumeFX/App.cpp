@@ -1,5 +1,6 @@
 #include "Apps/VolumeFX/App.h"
 
+#include <algorithm>
 #include <cfloat>
 
 #include <glad/glad.h>
@@ -22,14 +23,21 @@ namespace VCX::Apps::VolumeFX {
         _camera.Update(ImGui::GetIO(), deltaTime);
         _audio.Update(deltaTime);
 
+        // Push UI-controlled simulation parameters before stepping
+        _sim.SetForceStrength(_forceStrength);
+        _sim.SetForceSigma(_forceSigma);
+        _sim.SetVelDamp(_velDamp);
+        _sim.SetJacobiIters(_jacobiIters);
+        _sim.SetAdvectStrength(_advectStrength);
+        _sim.SetDiffuseEnabled(_diffuseEnabled);
+        _sim.SetDiffusionK(_diffuseK);
+
         _sim.step(deltaTime, _audio.PlaybackTime(), _audio.VisualizationGain());
 
         glEnable(GL_DEPTH_TEST);
         glClearColor(0.05f, 0.07f, 0.10f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        _sim.SetDiffuseEnabled(_diffuseEnabled);
-        _sim.SetDiffusionK(_diffuseK);
         _renderer.Render(_sim.densityTex(), _camera, _audio.VisualizationGain(), _densityThreshold, _showBoundingBox);
         renderUI();
     }
@@ -110,6 +118,12 @@ namespace VCX::Apps::VolumeFX {
         ImGui::SliderFloat("Density thresh", &_densityThreshold, 0.0f, 0.2f, "%.3f");
         ImGui::Checkbox("Show bounding box", &_showBoundingBox);
         ImGui::Separator();
+        ImGui::TextUnformatted("Fluid parameters");
+        ImGui::SliderFloat("Force strength", &_forceStrength, 0.0f, 20.0f, "%.2f");
+        ImGui::SliderFloat("Force sigma", &_forceSigma, 0.02f, 0.30f, "%.3f");
+        ImGui::SliderFloat("Velocity damp", &_velDamp, 0.90f, 0.9995f, "%.4f");
+        ImGui::SliderInt("Jacobi iters", &_jacobiIters, 1, 120);
+        ImGui::SliderFloat("Density advect x", &_advectStrength, 0.5f, 6.0f, "%.2f");
         ImGui::Checkbox("Diffuse (feather edges)", &_diffuseEnabled);
         ImGui::BeginDisabled(! _diffuseEnabled);
         if (ImGui::SliderFloat("Diffuse k", &_diffuseK, 0.0f, 0.15f, "%.3f")) {

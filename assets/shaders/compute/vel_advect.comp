@@ -2,13 +2,12 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 
-layout(binding = 0) uniform sampler3D u_In;
-layout(binding = 1) uniform sampler3D u_Vel;
-layout(r16f, binding = 0) uniform writeonly image3D u_Out;
+layout(binding = 0) uniform sampler3D u_VelIn;
+layout(rgba16f, binding = 0) uniform writeonly image3D u_VelOut;
 
 uniform ivec3 u_Size;
 uniform float u_Dt;
-uniform float u_AdvectStrength;
+uniform float u_VelDamp;
 
 void main() {
     ivec3 id = ivec3(gl_GlobalInvocationID);
@@ -19,10 +18,12 @@ void main() {
     vec3 sizef = vec3(u_Size);
     vec3 uv = (vec3(id) + 0.5) / sizef;
 
-    vec3 v = texture(u_Vel, uv).xyz;
-    vec3 prev = uv - u_Dt * u_AdvectStrength * v;
+    vec3 v = texture(u_VelIn, uv).xyz;
+    vec3 prev = uv - u_Dt * v;
     prev = clamp(prev, vec3(0.0), vec3(1.0));
 
-    float d = texture(u_In, prev).r;
-    imageStore(u_Out, id, vec4(d, 0.0, 0.0, 1.0));
+    vec3 v2 = texture(u_VelIn, prev).xyz;
+    v2 *= u_VelDamp;
+
+    imageStore(u_VelOut, id, vec4(v2, 0.0));
 }
