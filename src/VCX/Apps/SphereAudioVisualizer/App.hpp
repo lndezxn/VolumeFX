@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Apps/SphereAudioVisualizer/SphereVolumeData.hpp"
 #include "Engine/app.h"
 
 namespace VCX::Apps::SphereAudioVisualizer {
@@ -10,6 +11,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
     private:
         float _alpha;
+        SphereVolumeData _volumeData;
     };
 
     void EnsureLogger();

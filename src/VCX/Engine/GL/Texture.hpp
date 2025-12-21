@@ -36,15 +36,22 @@ namespace VCX::Engine::GL {
         static GLenum constexpr BindTarget = GL_TEXTURE_2D;
     };
 
-	struct TextureCubeMapTrait {
-		static auto constexpr & CreateMany = glGenTextures;
-		static auto constexpr & DeleteMany = glDeleteTextures;
+    struct Texture3DTrait {
+        static auto constexpr & CreateMany = glGenTextures;
+        static auto constexpr & DeleteMany = glDeleteTextures;
+        static auto constexpr & Bind       = glBindTexture;
+        static GLenum constexpr BindTarget = GL_TEXTURE_3D;
+    };
+
+    struct TextureCubeMapTrait {
+        static auto constexpr & CreateMany = glGenTextures;
+        static auto constexpr & DeleteMany = glDeleteTextures;
         static auto constexpr & Bind       = glBindTexture;
         static GLenum constexpr BindTarget = GL_TEXTURE_CUBE_MAP;
-	};
+    };
 
     template<typename TypeTrait>
-        requires(TypeTrait::BindTarget == GL_TEXTURE_2D || TypeTrait::BindTarget == GL_TEXTURE_CUBE_MAP)
+        requires(TypeTrait::BindTarget == GL_TEXTURE_2D || TypeTrait::BindTarget == GL_TEXTURE_CUBE_MAP || TypeTrait::BindTarget == GL_TEXTURE_3D)
     class UniqueTexture : public Unique<TypeTrait> {
     public:
         static GLenum constexpr TypeEnum = TypeTrait::BindTarget;
@@ -155,6 +162,18 @@ namespace VCX::Engine::GL {
         }
 
         template<TextureFormat Format>
+        void UpdateImpl(Texture3D<Format> const & texture) const
+            requires std::is_same_v<TypeTrait, Texture3DTrait> {
+            glTexImage3D(
+                GL_TEXTURE_3D, 0,
+                InternalFormatEnumOf<Format>,
+                texture.GetSizeX(), texture.GetSizeY(), texture.GetSizeZ(),
+                0,
+                FormatEnumOf<Format>, PixelTypeEnumOf<Format>,
+                texture.GetBytes().data());
+        }
+
+        template<TextureFormat Format>
         void UpdateImpl(std::array<Texture2D<Format>, 6> const & texture) const
             requires std::is_same_v<TypeTrait, TextureCubeMapTrait> {
             for (std::size_t i = 0; i < 6; ++i) {
@@ -184,4 +203,5 @@ namespace VCX::Engine::GL {
 
     using UniqueTexture2D      = UniqueTexture<Texture2DTrait>;
     using UniqueTextureCubeMap = UniqueTexture<TextureCubeMapTrait>;
+    using UniqueTexture3D      = UniqueTexture<Texture3DTrait>;
 }

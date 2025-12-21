@@ -1,5 +1,6 @@
 #include "Apps/SphereAudioVisualizer/App.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <mutex>
 #include <vector>
@@ -52,7 +53,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
                 spdlog::info("SphereAudioVisualizer logging to {}", logPath.string());
             });
         }
-    } // namespace
+    }
 
     void EnsureLogger() {
         SetupLogger();
@@ -61,6 +62,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
     App::App(): _alpha(0.5f) {
         SetupLogger();
         spdlog::debug("SphereAudioVisualizer initialized.");
+        _volumeData.Regenerate();
     }
 
     void App::OnFrame() {
@@ -70,6 +72,61 @@ namespace VCX::Apps::SphereAudioVisualizer {
             spdlog::info("Reload Config requested.");
         }
         ImGui::SliderFloat("alpha", &_alpha, 0.f, 1.f);
+        ImGui::Separator();
+
+        auto settings = _volumeData.GetSettings();
+        bool       settingsChanged = false;
+        int        volumeSizeInput = static_cast<int>(settings.VolumeSize);
+        if (ImGui::InputInt("Volume Size", &volumeSizeInput)) {
+            settings.VolumeSize = static_cast<std::size_t>(std::clamp(volumeSizeInput, 32, 256));
+            settingsChanged = true;
+        }
+
+        int shellCount = settings.NumShells;
+        if (ImGui::SliderInt("Shells", &shellCount, 1, 32)) {
+            settings.NumShells = shellCount;
+            settingsChanged = true;
+        }
+
+        float thickness = settings.Thickness;
+        if (ImGui::SliderFloat("Thickness", &thickness, 0.02f, 0.5f)) {
+            settings.Thickness = thickness;
+            settingsChanged = true;
+        }
+
+        float gain = settings.GlobalGain;
+        if (ImGui::SliderFloat("Global Gain", &gain, 0.1f, 5.f)) {
+            settings.GlobalGain = gain;
+            settingsChanged = true;
+        }
+
+        bool requestRebuild = false;
+        if (ImGui::Button("Regenerate")) {
+            requestRebuild = true;
+        }
+
+        if (settingsChanged || requestRebuild) {
+            _volumeData.SetSettings(settings);
+            _volumeData.Regenerate();
+        }
+
+        auto const volumeSize = _volumeData.GetVolumeSize();
+        if (volumeSize > 0) {
+            int sliceIndex = static_cast<int>(_volumeData.GetSliceIndex());
+            if (ImGui::SliderInt("Slice Z", &sliceIndex, 0, static_cast<int>(volumeSize) - 1)) {
+                _volumeData.SetSliceIndex(static_cast<std::size_t>(sliceIndex));
+            }
+
+            ImGui::Text("Volume tex ID: %u", _volumeData.GetVolumeTextureId());
+            ImGui::Text("Slice Preview");
+            auto const previewSize = ImVec2(256.f, 256.f);
+            ImGui::Image(
+                _volumeData.GetSliceTextureHandle(),
+                previewSize,
+                ImVec2(0.f, 1.f),
+                ImVec2(1.f, 0.f));
+        }
+
         ImGui::End();
     }
 
