@@ -22,7 +22,7 @@ uniform float uRippleFreq;
 uniform float uRippleSpeed;
 uniform float uBass;
 uniform int uShellMode;
-layout(binding = 0) uniform sampler3D uVolumeTexture;
+layout(binding = 0) uniform sampler3D uVolumeTex;
 layout(binding = 1) uniform sampler2D uTransferLut;
 
 layout(std430, binding = 0) buffer RayMarchStats {
@@ -122,7 +122,7 @@ void main() {
             continue;
         }
 
-        float density = texture(uVolumeTexture, texCoord).r;
+        float density = texture(uVolumeTex, texCoord).r;
         vec4 lutSample = texture(uTransferLut, vec2(density, 0.5));
         vec3 color = (uColorMode == 0)
             ? vec3(density)

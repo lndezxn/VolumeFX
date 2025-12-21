@@ -8,6 +8,7 @@
 #include <glm/glm.hpp>
 
 #include "Apps/SphereAudioVisualizer/SphereVolumeData.hpp"
+#include "Apps/SphereAudioVisualizer/GpuVolumeBuilder.hpp"
 #include "Apps/SphereAudioVisualizer/AudioFilePlayer.hpp"
 #include "kissfft/kiss_fft.h"
 #include "Engine/Camera.hpp"
@@ -136,9 +137,11 @@ namespace VCX::Apps::SphereAudioVisualizer {
         void LoadConfig();
         void SaveConfig();
         std::filesystem::path ConfigFilePath() const;
+        void InitGLCapabilities();
 
         float _alpha;
         SphereVolumeData _volumeData;
+        GpuVolumeBuilder _gpuVolumeBuilder;
         AudioFilePlayer _audio;
         char _audioPath[512] = "";
         bool _audioLoop = false;
@@ -160,6 +163,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         float _audioBass = 0.f;
         float _volumeBuildMs = 0.f;
         float _volumeUploadMs = 0.f;
+        float _gpuBuildMs = 0.f;
+        float _renderMs = 0.f;
         std::size_t _fftUpdatesPerSecond = 0;
         std::size_t _fftUpdateCounter = 0;
         std::size_t _audioReadable = 0;
@@ -179,6 +184,12 @@ namespace VCX::Apps::SphereAudioVisualizer {
         uint64_t _accumulatedEarly = 0;
         uint32_t _frameIndex = 0;
         float _time = 0.f;
+        bool _computeSupported = false;
+        bool _forceCpuBuild = false;
+        bool _useGpuBuild = true;
+        bool _buildOnEnergyUpdate = true;
+        bool _energiesUpdatedThisFrame = false;
+        uint32_t _lastBuildFrameIndex = 0;
     };
 
     void EnsureLogger();

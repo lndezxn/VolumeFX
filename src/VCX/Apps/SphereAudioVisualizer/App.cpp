@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <cstddef>
 #include <cstring>
 #include <exception>
@@ -293,6 +294,72 @@ namespace VCX::Apps::SphereAudioVisualizer {
             }
             return glm::vec3(node[0].as<float>(fallback.r), node[1].as<float>(fallback.g), node[2].as<float>(fallback.b));
         }
+
+        bool ParseGLVersion(std::string const & value, int & major, int & minor) {
+            major = 0;
+            minor = 0;
+            std::size_t idx = 0;
+            while (idx < value.size() && !std::isdigit(static_cast<unsigned char>(value[idx]))) {
+                ++idx;
+            }
+            if (idx == value.size()) {
+                return false;
+            }
+            std::size_t start = idx;
+            while (idx < value.size() && std::isdigit(static_cast<unsigned char>(value[idx]))) {
+                ++idx;
+            }
+            if (idx == start) {
+                return false;
+            }
+            major = std::stoi(value.substr(start, idx - start));
+            if (idx >= value.size() || value[idx] != '.') {
+                return false;
+            }
+            ++idx;
+            start = idx;
+            while (idx < value.size() && std::isdigit(static_cast<unsigned char>(value[idx]))) {
+                ++idx;
+            }
+            if (idx == start) {
+                return false;
+            }
+            minor = std::stoi(value.substr(start, idx - start));
+            return true;
+        }
+    }
+
+    void App::InitGLCapabilities() {
+        auto const vendorPtr = reinterpret_cast<char const *>(glGetString(GL_VENDOR));
+        auto const rendererPtr = reinterpret_cast<char const *>(glGetString(GL_RENDERER));
+        auto const versionPtr = reinterpret_cast<char const *>(glGetString(GL_VERSION));
+
+        std::string const vendor = vendorPtr ? vendorPtr : "Unknown";
+        std::string const renderer = rendererPtr ? rendererPtr : "Unknown";
+        std::string const version = versionPtr ? versionPtr : "Unknown";
+
+        spdlog::info("GL_VENDOR: {}", vendor);
+        spdlog::info("GL_RENDERER: {}", renderer);
+        spdlog::info("GL_VERSION: {}", version);
+
+        int major = 0;
+        int minor = 0;
+        bool versionParsed = ParseGLVersion(version, major, minor);
+        bool versionSupported = versionParsed && (major > 4 || (major == 4 && minor >= 3));
+#ifdef GLAD_GL_ARB_compute_shader
+        bool extensionSupported = GLAD_GL_ARB_compute_shader != 0;
+#else
+        bool extensionSupported = false;
+#endif
+
+        _computeSupported = versionSupported || extensionSupported;
+        _forceCpuBuild = !_computeSupported;
+
+        if (_computeSupported) {
+            spdlog::info("Compute shaders supported (version {}, GL_ARB_compute_shader={}), using GPU build path.", version, extensionSupported ? "yes" : "no");
+        } else {
+            spdlog::warn("Compute shaders not available (version {}, GL_ARB_compute_shader={}), using CPU build path.", version, extensionSupported ? "yes" : "no");
+        }
     }
 
     char const * App::ColorModeName(App::ColorMode mode) {
@@ -549,6 +616,9 @@ namespace VCX::Apps::SphereAudioVisualizer {
             VCX::Engine::GL::SharedShader("assets/shaders/spherevis_volume.frag"),
         }) {
         SetupLogger();
+        InitGLCapabilities();
+        _useGpuBuild = _computeSupported;
+        _buildOnEnergyUpdate = true;
         spdlog::debug("SphereAudioVisualizer initialized.");
 
         {
@@ -671,6 +741,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
             }
             if (_audio.UsingSineFallback()) {
                 ImGui::Text("Fallback: sine test (load failed)");
+
             }
         }
 
@@ -951,6 +1022,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
             ++_fftUpdateCounter;
         }
 
+        _energiesUpdatedThisFrame = (read >= fftSize);
+
         float mean = 0.f;
         if (!state.Window.empty()) {
             mean = std::accumulate(state.Window.begin(), state.Window.end(), 0.f) / static_cast<float>(state.Window.size());
@@ -1044,9 +1117,28 @@ namespace VCX::Apps::SphereAudioVisualizer {
             state.SpectrumDownsample.clear();
         }
 
-        auto const volumeStats = _volumeData.UpdateVolume(state.BandEnergies);
-        _volumeBuildMs = volumeStats.BuildMs;
-        _volumeUploadMs = volumeStats.UploadMs;
+        auto const volumeSettings = _volumeData.GetSettings();
+        bool const useGpuBuilder = _useGpuBuild && _computeSupported;
+        bool const shouldBuildVolume = !_buildOnEnergyUpdate || _energiesUpdatedThisFrame;
+        if (shouldBuildVolume) {
+            if (useGpuBuilder) {
+                _gpuVolumeBuilder.EnsureResources(volumeSettings.VolumeSize);
+                auto const buildStats = _gpuVolumeBuilder.DispatchBuild(state.BandEnergies, volumeSettings);
+                _volumeBuildMs = buildStats.BuildMs;
+                _volumeUploadMs = buildStats.UploadMs;
+                _gpuBuildMs = buildStats.BuildMs;
+            } else {
+                auto const volumeStats = _volumeData.UpdateVolume(state.BandEnergies);
+                _volumeBuildMs = volumeStats.BuildMs;
+                _volumeUploadMs = volumeStats.UploadMs;
+                _gpuBuildMs = 0.f;
+            }
+            _lastBuildFrameIndex = _frameIndex;
+        } else {
+            _volumeBuildMs = 0.f;
+            _volumeUploadMs = 0.f;
+            _gpuBuildMs = 0.f;
+        }
         _volumeLogTimer += deltaTime;
         if (_volumeLogTimer >= 1.f) {
             _volumeLogTimer -= 1.f;
@@ -1095,10 +1187,14 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
     void App::RenderVolume(float deltaTime) {
         auto const volumeSize = _volumeData.GetVolumeSize();
-        auto const volumeTex = _volumeData.GetVolumeTextureId();
+        bool const useGpuTexture = !_forceCpuBuild && _useGpuBuild && _computeSupported;
+        auto const volumeTex = useGpuTexture ? _gpuVolumeBuilder.GetVolumeTexture() : _volumeData.GetVolumeTextureId();
+        auto const renderStart = std::chrono::high_resolution_clock::now();
         auto const windowSize = VCX::Engine::GetCurrentWindowSize();
-        if (volumeSize == 0 || volumeTex == 0 || windowSize.first == 0 || windowSize.second == 0)
+        if (volumeSize == 0 || volumeTex == 0 || windowSize.first == 0 || windowSize.second == 0) {
+            _renderMs = 0.f;
             return;
+        }
 
         ResetStatsBuffer();
 
@@ -1185,6 +1281,9 @@ namespace VCX::Apps::SphereAudioVisualizer {
             _statsTimer = 0.f;
         }
 
+        auto const renderEnd = std::chrono::high_resolution_clock::now();
+        _renderMs = std::chrono::duration<float, std::milli>(renderEnd - renderStart).count();
+
         ++_frameIndex;
     }
 
@@ -1196,6 +1295,10 @@ namespace VCX::Apps::SphereAudioVisualizer {
         RenderVolume(deltaTime);
 
         ImGui::Begin("Sphere Audio Visualizer");
+        if (_forceCpuBuild) {
+            _useGpuBuild = false;
+            ImGui::TextColored(ImVec4(1.f, 0.6f, 0.2f, 1.f), "Compute not supported, fallback CPU build");
+        }
         ImGui::Text("FPS: %.1f", CurrentFps());
         if (ImGui::Button("Reload Config")) {
             LoadConfig();
@@ -1245,6 +1348,18 @@ namespace VCX::Apps::SphereAudioVisualizer {
             }
 
             ImGui::Text("Volume build: %.2f ms, upload: %.2f ms", _volumeBuildMs, _volumeUploadMs);
+            ImGui::BeginDisabled(!_computeSupported);
+            ImGui::Checkbox("Use GPU Build", &_useGpuBuild);
+            ImGui::EndDisabled();
+            ImGui::Checkbox("Build On Energy Update", &_buildOnEnergyUpdate);
+            if (_buildOnEnergyUpdate && !_energiesUpdatedThisFrame) {
+                ImGui::TextColored(ImVec4(1.f, 0.6f, 0.2f, 1.f), "Waiting for new FFT energy before rebuild");
+            }
+            ImGui::Text("Last build frame: %u", _lastBuildFrameIndex);
+            ImGui::Text("Render ms: %.2f", _renderMs);
+            if (_useGpuBuild && _computeSupported) {
+                ImGui::Text("GPU build ms: %.2f", _gpuBuildMs);
+            }
             if (ImGui::Button("Regenerate")) {
                 settingsChanged = true;
             }
@@ -1305,14 +1420,19 @@ namespace VCX::Apps::SphereAudioVisualizer {
                 _volumeData.SetSliceIndex(static_cast<std::size_t>(sliceIndex));
             }
 
-            ImGui::Text("Volume tex ID: %u", _volumeData.GetVolumeTextureId());
-            ImGui::Text("Slice Preview");
-            auto const previewSize = ImVec2(256.f, 256.f);
-            ImGui::Image(
-                _volumeData.GetSliceTextureHandle(),
-                previewSize,
-                ImVec2(0.f, 1.f),
-                ImVec2(1.f, 0.f));
+            if (_forceCpuBuild) {
+                ImGui::Text("Volume tex ID: %u", _volumeData.GetVolumeTextureId());
+                ImGui::Text("Slice Preview");
+                auto const previewSize = ImVec2(256.f, 256.f);
+                ImGui::Image(
+                    _volumeData.GetSliceTextureHandle(),
+                    previewSize,
+                    ImVec2(0.f, 1.f),
+                    ImVec2(1.f, 0.f));
+            } else {
+                ImGui::Text("GPU volume tex ID: %u", _gpuVolumeBuilder.GetVolumeTexture());
+                ImGui::Text("Slice preview disabled while using the GPU builder.");
+            }
         }
 
         ImGui::Separator();

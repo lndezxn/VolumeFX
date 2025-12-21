@@ -1,0 +1,47 @@
+#version 430 core
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(r16f, binding = 0) writeonly uniform image3D uVolume;
+
+uniform int uVolumeSize;
+uniform int uNumBands;
+uniform float uBaseThickness;
+uniform float uGlobalGain;
+uniform float uAmpScale;
+uniform float uThicknessScale;
+uniform float uBandBaseRadius[256];
+uniform float uBandGains[256];
+uniform float uEnergies[256];
+
+float ComputeRadiusTarget(int band, float energy) {
+    float baseRadius = uBandBaseRadius[band];
+    return baseRadius * (1.0 + uAmpScale * energy);
+}
+
+float ComputeThickness(float energy) {
+    return max(uBaseThickness * (1.0 + uThicknessScale * energy), 0.01);
+}
+
+void main() {
+    ivec3 gid = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(gid, ivec3(uVolumeSize)))) {
+        return;
+    }
+    vec3 coord = vec3(gid);
+    vec3 norm = vec3(0.0);
+    if (uVolumeSize > 1) {
+        norm = coord / float(uVolumeSize - 1) * 2.0 - 1.0;
+    }
+    float radius = length(norm);
+    float density = 0.0;
+    for (int band = 0; band < uNumBands; ++band) {
+        float energy = uEnergies[band];
+        float radiusTarget = ComputeRadiusTarget(band, energy);
+        float thickness = ComputeThickness(energy);
+        float delta = (radius - radiusTarget) / thickness;
+        density += uBandGains[band] * energy * exp(-delta * delta);
+    }
+    float value = clamp(density * uGlobalGain, 0.0, 1.0);
+    imageStore(uVolume, gid, vec4(value, 0.0, 0.0, 1.0));
+}
