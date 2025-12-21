@@ -45,6 +45,9 @@ namespace VCX::Apps::VolumeFX {
         _program(Engine::GL::UniqueProgram({
             Engine::GL::SharedShader("assets/shaders/volume_fx.vert"),
             Engine::GL::SharedShader("assets/shaders/volume_raymarch.frag") })),
+        _boxProgram(Engine::GL::UniqueProgram({
+            Engine::GL::SharedShader("assets/shaders/volume_fx.vert"),
+            Engine::GL::SharedShader("assets/shaders/volume_box.frag") })),
         _cube(
             Engine::GL::VertexLayout()
                 .Add<Vertex>("vertex", Engine::GL::DrawFrequency::Static)
@@ -53,9 +56,10 @@ namespace VCX::Apps::VolumeFX {
         _cube.UpdateVertexBuffer("vertex", Engine::make_span_bytes<Vertex>(std::span(c_CubeVertices)));
         _cube.UpdateElementBuffer(c_CubeIndices);
         _program.GetUniforms().SetByName("u_DensityTex", 0);
+        _boxProgram.GetUniforms().SetByName("u_DensityTex", 0);
     }
 
-    void VolumeRenderer::Render(GLuint densityTex, const OrbitCamera & camera, float visualizationGain, float densityThreshold) {
+    void VolumeRenderer::Render(GLuint densityTex, const OrbitCamera & camera, float visualizationGain, float densityThreshold, bool showBoundingBox) {
         auto const [frameW, frameH] = Engine::GetCurrentFrameSize();
         float const aspect = frameH == 0 ? 1.0f : static_cast<float>(frameW) / static_cast<float>(frameH);
 
@@ -84,6 +88,17 @@ namespace VCX::Apps::VolumeFX {
             glBindTexture(GL_TEXTURE_3D, densityTex);
         }
         _cube.Draw({ _program.Use() });
+
+        if (showBoundingBox) {
+            auto & boxUniforms = _boxProgram.GetUniforms();
+            boxUniforms.SetByName("u_Model", model);
+            boxUniforms.SetByName("u_ViewProj", projection * view);
+            boxUniforms.SetByName("u_Color", glm::vec3(0.1f, 0.8f, 0.9f));
+
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            _cube.Draw({ _boxProgram.Use() });
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        }
     }
 
     int VolumeRenderer::RaymarchSteps() const {

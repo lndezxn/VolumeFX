@@ -28,7 +28,7 @@ namespace VCX::Apps::VolumeFX {
         glClearColor(0.05f, 0.07f, 0.10f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        _renderer.Render(_sim.densityTex(), _camera, _audio.VisualizationGain(), _densityThreshold);
+        _renderer.Render(_sim.densityTex(), _camera, _audio.VisualizationGain(), _densityThreshold, _showBoundingBox);
         renderUI();
     }
 
@@ -106,6 +106,7 @@ namespace VCX::Apps::VolumeFX {
         ImGui::TextUnformatted("Right-drag to orbit, scroll to zoom.");
         ImGui::Text("Gain feeds renderer scale: %.2f", _audio.VisualizationGain());
         ImGui::SliderFloat("Density thresh", &_densityThreshold, 0.0f, 0.2f, "%.3f");
+        ImGui::Checkbox("Show bounding box", &_showBoundingBox);
         ImGui::End();
     }
 } // namespace VCX::Apps::VolumeFX

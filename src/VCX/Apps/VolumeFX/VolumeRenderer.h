@@ -14,7 +14,7 @@ namespace VCX::Apps::VolumeFX {
     public:
         VolumeRenderer();
 
-        void Render(GLuint densityTex, const OrbitCamera & camera, float visualizationGain, float densityThreshold);
+        void Render(GLuint densityTex, const OrbitCamera & camera, float visualizationGain, float densityThreshold, bool showBoundingBox);
 
         struct Vertex {
             glm::vec3 Position;
@@ -26,6 +26,7 @@ namespace VCX::Apps::VolumeFX {
 
     private:
         Engine::GL::UniqueProgram           _program;
+        Engine::GL::UniqueProgram           _boxProgram;
         Engine::GL::UniqueIndexedRenderItem _cube;
         int                                 _raymarchSteps = 96;
     };

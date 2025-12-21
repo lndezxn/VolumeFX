@@ -89,7 +89,6 @@ namespace VCX::Apps::VolumeFX {
             return;
         }
 
-        auto const useProgram = _injectProgram.Use();
         auto & uniforms = _injectProgram.GetUniforms();
         uniforms.SetByName("u_Size", glm::ivec3(_size[0], _size[1], _size[2]));
         uniforms.SetByName("u_Time", time);
@@ -111,6 +110,7 @@ namespace VCX::Apps::VolumeFX {
         GLuint groupsX = static_cast<GLuint>(divUp(_size[0]));
         GLuint groupsY = static_cast<GLuint>(divUp(_size[1]));
         GLuint groupsZ = static_cast<GLuint>(divUp(_size[2]));
+        auto const useProgram = _injectProgram.Use(); // ensure program is bound for dispatch
         glDispatchCompute(groupsX, groupsY, groupsZ);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
 

@@ -4,7 +4,6 @@ build
 .vs
 .vscode
 vsxmake*
-.assets
 
 docs/html
 docs/latex
