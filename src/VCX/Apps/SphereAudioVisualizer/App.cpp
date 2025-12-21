@@ -127,6 +127,121 @@ namespace VCX::Apps::SphereAudioVisualizer {
         spdlog::info("{}={:.3f}", name, value);
     }
 
+    void App::RenderAudioUI() {
+        ImGui::Separator();
+        ImGui::Text("Audio");
+        ImGui::InputText("File", _audioPath, IM_ARRAYSIZE(_audioPath));
+        ImGui::SameLine();
+        if (ImGui::Button("Load")) {
+            bool ok = _audio.LoadFile(_audioPath);
+            if (ok) {
+                spdlog::info("Audio loaded: {}", _audioPath);
+            } else {
+                spdlog::error("Audio load failed: {}", _audio.GetLastError());
+            }
+        }
+
+        if (ImGui::Button("Play")) {
+            _audio.Play();
+            spdlog::info("Audio play");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Pause")) {
+            _audio.Pause();
+            spdlog::info("Audio pause");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Stop")) {
+            _audio.Stop();
+            spdlog::info("Audio stop");
+        }
+
+        if (ImGui::Checkbox("Loop", &_audioLoop)) {
+            _audio.SetLoop(_audioLoop);
+        }
+
+        float timeNow = _audio.GetTimeSeconds();
+        float duration = _audio.GetDurationSeconds();
+        ImGui::Text("Time: %.2f / %.2f s", timeNow, duration);
+        ImGui::Text("Rate: %u Hz, Channels: %u", _audio.GetSampleRate(), _audio.GetChannels());
+        if (ImGui::SliderInt("Headroom", &_audioHeadroom, 0, static_cast<int>(kFftWindowSize * 2))) {
+            _audioHeadroom = std::clamp(_audioHeadroom, 0, static_cast<int>(kFftWindowSize * 2));
+        }
+        float fill = _audio.GetRingFillRatio();
+        ImGui::ProgressBar(fill, ImVec2(-1.f, 0.f), "Ring fill");
+        ImGui::Text("Ring strategy: overwrite-old");
+        ImGui::Text("Readable: %zu", _audioReadable);
+        ImGui::Text("FFT updates/s: %zu", _fftUpdatesPerSecond);
+        ImGui::Text("Window RMS: %.5f", _audioWindowRms);
+        ImGui::PlotLines("Oscilloscope",
+            _oscilloscopePoints.data(),
+            static_cast<int>(_oscilloscopePoints.size()),
+            0,
+            nullptr,
+            -1.f,
+            1.f,
+            ImVec2(-1.f, 80.f));
+        ImGui::Text("overrunWrites: %llu, droppedSamples: %llu, underrunReads: %llu",
+            static_cast<unsigned long long>(_audio.GetOverrunWrites()),
+            static_cast<unsigned long long>(_audio.GetDroppedSamples()),
+            static_cast<unsigned long long>(_audio.GetUnderrunReads()));
+        if (!_audio.GetLastError().empty()) {
+            ImGui::TextColored(ImVec4(1.f, 0.f, 0.f, 1.f), "%s", _audio.GetLastError().c_str());
+        }
+        if (_audio.UsingSineFallback()) {
+            ImGui::Text("Fallback: sine test (load failed)");
+        }
+    }
+
+    void App::UpdateAudioAnalysis(float deltaTime) {
+        if (_audioWindow.size() != kFftWindowSize) {
+            _audioWindow.assign(kFftWindowSize, 0.f);
+        }
+        int headroom = std::clamp(_audioHeadroom, 0, static_cast<int>(kFftWindowSize * 2));
+        auto readable = _audio.GetAvailableSamples();
+        _audioReadable = readable;
+        if (readable >= kFftWindowSize) {
+            std::size_t read = _audio.GetLatestWindow(_audioWindow.data(), kFftWindowSize, static_cast<std::size_t>(headroom));
+            if (read == kFftWindowSize) {
+                ++_fftUpdateCounter;
+            }
+        } else {
+            for (auto & sample : _audioWindow) {
+                sample *= 0.995f;
+            }
+        }
+        float sumSquares = 0.f;
+        for (auto sample : _audioWindow) {
+            sumSquares += sample * sample;
+        }
+        _audioWindowRms = _audioWindow.empty() ? 0.f : std::sqrt(sumSquares / static_cast<float>(_audioWindow.size()));
+        if (!_audioWindow.empty()) {
+            float step = static_cast<float>(_audioWindow.size()) / static_cast<float>(_oscilloscopePoints.size());
+            for (std::size_t i = 0; i < _oscilloscopePoints.size(); ++i) {
+                std::size_t idx = std::min(_audioWindow.size() - 1, static_cast<std::size_t>(i * step));
+                _oscilloscopePoints[i] = _audioWindow[idx];
+            }
+        } else {
+            _oscilloscopePoints.fill(0.f);
+        }
+        _audioLogTimer += deltaTime;
+        if (_audioLogTimer >= 1.f) {
+            _audioLogTimer -= 1.f;
+            _fftUpdatesPerSecond = _fftUpdateCounter;
+            _fftUpdateCounter = 0;
+            float fill = _audio.GetRingFillRatio();
+            spdlog::info("Audio stats fill {:.3f}, readable {}, fftUpdates {}, windowRMS {:.5f}, overrun {}, dropped {}, underrun {}, headroom {}",
+                fill,
+                readable,
+                _fftUpdatesPerSecond,
+                _audioWindowRms,
+                _audio.GetOverrunWrites(),
+                _audio.GetDroppedSamples(),
+                _audio.GetUnderrunReads(),
+                headroom);
+        }
+    }
+
     void App::RenderVolume(float deltaTime) {
         auto const volumeSize = _volumeData.GetVolumeSize();
         auto const volumeTex = _volumeData.GetVolumeTextureId();
@@ -216,6 +331,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         float const deltaTime = VCX::Engine::GetDeltaTime();
         _cameraManager.ProcessInput(_camera, ImGui::GetMousePos());
         _cameraManager.Update(_camera);
+        UpdateAudioAnalysis(deltaTime);
         RenderVolume(deltaTime);
 
         ImGui::Begin("Sphere Audio Visualizer");
@@ -225,6 +341,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         }
         ImGui::SliderFloat("alpha", &_alpha, 0.f, 1.f);
         ImGui::Separator();
+
+        RenderAudioUI();
 
         auto settings = _volumeData.GetSettings();
         bool settingsChanged = false;
