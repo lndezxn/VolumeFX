@@ -1,0 +1,45 @@
+#version 430
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(binding = 0) uniform sampler3D u_In;
+layout(r16f, binding = 0) uniform writeonly image3D u_Out;
+
+uniform ivec3 u_Size;
+uniform float u_DiffK; // diffusion rate
+
+void main() {
+    ivec3 id = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(id, u_Size))) {
+        return;
+    }
+
+    ivec3 s = u_Size;
+    ivec3 clampedId = clamp(id, ivec3(0), s - ivec3(1));
+
+    // Offsets to 6-neighborhood
+    const ivec3 dx = ivec3(1, 0, 0);
+    const ivec3 dy = ivec3(0, 1, 0);
+    const ivec3 dz = ivec3(0, 0, 1);
+
+    ivec3 qC = clamp(clampedId,        ivec3(0), s - ivec3(1));
+    ivec3 qL = clamp(clampedId - dx,   ivec3(0), s - ivec3(1));
+    ivec3 qR = clamp(clampedId + dx,   ivec3(0), s - ivec3(1));
+    ivec3 qB = clamp(clampedId - dy,   ivec3(0), s - ivec3(1));
+    ivec3 qT = clamp(clampedId + dy,   ivec3(0), s - ivec3(1));
+    ivec3 qD = clamp(clampedId - dz,   ivec3(0), s - ivec3(1));
+    ivec3 qU = clamp(clampedId + dz,   ivec3(0), s - ivec3(1));
+
+    float dC = texelFetch(u_In, qC, 0).r;
+    float dL = texelFetch(u_In, qL, 0).r;
+    float dR = texelFetch(u_In, qR, 0).r;
+    float dB = texelFetch(u_In, qB, 0).r;
+    float dT = texelFetch(u_In, qT, 0).r;
+    float dD = texelFetch(u_In, qD, 0).r;
+    float dU = texelFetch(u_In, qU, 0).r;
+
+    float lap = (dL + dR + dB + dT + dD + dU - 6.0 * dC);
+    float outD = clamp(dC + u_DiffK * lap, 0.0, 1.0);
+
+    imageStore(u_Out, clampedId, vec4(outD, 0.0, 0.0, 1.0));
+}

@@ -15,6 +15,11 @@ namespace VCX::Apps::VolumeFX {
         bool init(int sx, int sy, int sz);
         void step(float dt, float time, float audioGain);
 
+        void SetDiffuseEnabled(bool enabled);
+        bool DiffuseEnabled() const;
+        void SetDiffusionK(float k);
+        float DiffusionK() const;
+
         GLuint densityTex() const;
 
     private:
@@ -23,6 +28,7 @@ namespace VCX::Apps::VolumeFX {
 
         Engine::GL::UniqueProgram _injectProgram;
         Engine::GL::UniqueProgram _advectProgram;
+        Engine::GL::UniqueProgram _diffuseProgram;
 
         std::array<GLuint, 2> _density { 0, 0 };
         std::array<int, 3>    _size { 0, 0, 0 };
@@ -38,5 +44,8 @@ namespace VCX::Apps::VolumeFX {
         float                 _up = 0.35f;
         float                 _noiseStrength = 0.35f;
         float                 _noiseFreq = 3.0f;
+
+        bool                  _diffuseEnabled = true;
+        float                 _diffK = 0.05f;
     };
 } // namespace VCX::Apps::VolumeFX

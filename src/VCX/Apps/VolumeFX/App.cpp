@@ -28,6 +28,8 @@ namespace VCX::Apps::VolumeFX {
         glClearColor(0.05f, 0.07f, 0.10f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+        _sim.SetDiffuseEnabled(_diffuseEnabled);
+        _sim.SetDiffusionK(_diffuseK);
         _renderer.Render(_sim.densityTex(), _camera, _audio.VisualizationGain(), _densityThreshold, _showBoundingBox);
         renderUI();
     }
@@ -107,6 +109,13 @@ namespace VCX::Apps::VolumeFX {
         ImGui::Text("Gain feeds renderer scale: %.2f", _audio.VisualizationGain());
         ImGui::SliderFloat("Density thresh", &_densityThreshold, 0.0f, 0.2f, "%.3f");
         ImGui::Checkbox("Show bounding box", &_showBoundingBox);
+        ImGui::Separator();
+        ImGui::Checkbox("Diffuse (feather edges)", &_diffuseEnabled);
+        ImGui::BeginDisabled(! _diffuseEnabled);
+        if (ImGui::SliderFloat("Diffuse k", &_diffuseK, 0.0f, 0.15f, "%.3f")) {
+            _diffuseK = std::clamp(_diffuseK, 0.0f, 0.15f);
+        }
+        ImGui::EndDisabled();
         ImGui::End();
     }
 } // namespace VCX::Apps::VolumeFX

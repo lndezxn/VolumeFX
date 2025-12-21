@@ -11,9 +11,11 @@ namespace VCX::Apps::VolumeFX {
 
     VolumeSim::VolumeSim() :
         _injectProgram(Engine::GL::UniqueProgram({ Engine::GL::SharedShader("assets/shaders/compute/density_inject.comp") })),
-        _advectProgram(Engine::GL::UniqueProgram({ Engine::GL::SharedShader("assets/shaders/compute/density_advect.comp") })) {
+        _advectProgram(Engine::GL::UniqueProgram({ Engine::GL::SharedShader("assets/shaders/compute/density_advect.comp") })),
+        _diffuseProgram(Engine::GL::UniqueProgram({ Engine::GL::SharedShader("assets/shaders/compute/density_diffuse.comp") })) {
         _injectProgram.GetUniforms().SetByName("u_In", 0);
         _advectProgram.GetUniforms().SetByName("u_In", 0);
+        _diffuseProgram.GetUniforms().SetByName("u_In", 0);
     }
 
     VolumeSim::~VolumeSim() {
@@ -150,6 +152,44 @@ namespace VCX::Apps::VolumeFX {
             glActiveTexture(GL_TEXTURE0);
             _src = 1 - _src;
         }
+
+        // 3) Optional diffuse to feather edges
+        if (_diffuseEnabled) {
+            auto & diffuseUniforms = _diffuseProgram.GetUniforms();
+            diffuseUniforms.SetByName("u_Size", glm::ivec3(_size[0], _size[1], _size[2]));
+            diffuseUniforms.SetByName("u_DiffK", _diffK);
+
+            GLuint readTex = _density[_src];
+            GLuint writeTex = _density[1 - _src];
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_3D, readTex);
+            glBindImageTexture(0, writeTex, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R16F);
+
+            auto const useProgram = _diffuseProgram.Use();
+            glDispatchCompute(groupsX, groupsY, groupsZ);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+
+            glBindTexture(GL_TEXTURE_3D, 0);
+            glActiveTexture(GL_TEXTURE0);
+            _src = 1 - _src;
+        }
+    }
+
+    void VolumeSim::SetDiffuseEnabled(bool enabled) {
+        _diffuseEnabled = enabled;
+    }
+
+    bool VolumeSim::DiffuseEnabled() const {
+        return _diffuseEnabled;
+    }
+
+    void VolumeSim::SetDiffusionK(float k) {
+        _diffK = std::clamp(k, 0.0f, 0.5f);
+    }
+
+    float VolumeSim::DiffusionK() const {
+        return _diffK;
     }
 
     GLuint VolumeSim::densityTex() const {

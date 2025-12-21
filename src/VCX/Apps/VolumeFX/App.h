@@ -29,5 +29,8 @@ namespace VCX::Apps::VolumeFX {
         std::array<char, 512> _audioPathBuffer { };
         float                  _densityThreshold = 0.02f;
         bool                   _showBoundingBox = true;
+
+        bool                   _diffuseEnabled = true;
+        float                  _diffuseK = 0.05f;
     };
 } // namespace VCX::Apps::VolumeFX
