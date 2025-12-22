@@ -14,6 +14,8 @@ uniform float uStreak;
 
 out float vLifeProgress;
 out vec3 vColor;
+out vec2 vQuadPos;
+out vec2 vMotionDir;
 
 void main() {
     vec3 position = aPositionLife.xyz;
@@ -25,7 +27,16 @@ void main() {
     vec3 shift = uCameraRight * aQuadPos.x * uSize + uCameraUp * (aQuadPos.y - 0.5) * uSize;
     vec3 streak = streakDir * uStreak * aQuadPos.y * uSize;
     vec3 worldPos = position + shift + streak;
-    gl_Position = uProj * uView * vec4(worldPos, 1.0);
+    vec4 clipPos = uProj * uView * vec4(worldPos, 1.0);
+
+    vec3 samplePos = position + velocity * (0.02 * uStreak);
+    vec4 clipSample = uProj * uView * vec4(samplePos, 1.0);
+    vec2 ndc = clipPos.xy / clipPos.w;
+    vec2 ndcSample = clipSample.xy / clipSample.w;
+    vMotionDir = ndcSample - ndc;
+
+    gl_Position = clipPos;
     vLifeProgress = clamp(progress, 0.0, 1.0);
     vColor = aColor.rgb;
+    vQuadPos = aQuadPos;
 }

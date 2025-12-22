@@ -115,6 +115,14 @@ namespace VCX::Apps::SphereAudioVisualizer {
             return std::clamp(idx, 0, static_cast<int>(App::kFftSizes.size()) - 1);
         }
 
+        void LogIfSlow(char const * label, float ms, float thresholdMs, float currentTime) {
+            static float sLastLogTime = -1000.f;
+            if (ms > thresholdMs && currentTime - sLastLogTime > 0.5f) {
+                spdlog::warn("{} cost {:.2f} ms (> {:.2f} ms)", label, ms, thresholdMs);
+                sLastLogTime = currentTime;
+            }
+        }
+
         int CurrentFftSize(App::AudioAnalysisSettings const & settings) {
             return App::kFftSizes[ClampFftIndex(settings.FftSizeIndex)];
         }
@@ -433,9 +441,15 @@ namespace VCX::Apps::SphereAudioVisualizer {
         SparkParticleSystem() noexcept;
         void EnsureCapacity(int maxParticles);
         void Reset();
-        void Update(float deltaTime, float bass, float treble, App::SparkSettings const & settings);
+        void Update(float deltaTime,
+                    float bass,
+                    float treble,
+                    App::SparkSettings const & settings,
+                    int burstCount,
+                    float burstSpeedBoost,
+                    float burstBrightnessBoost);
         void FillInstances();
-        void SpawnParticle(App::SparkSettings const & settings, float treble);
+        void SpawnParticle(App::SparkSettings const & settings, float treble, float speedMultiplier, float brightnessMultiplier);
         glm::vec3 RandomDirection();
     };
 
@@ -475,7 +489,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         return glm::vec3(r * std::cos(theta), r * std::sin(theta), z);
     }
 
-    void SparkParticleSystem::SpawnParticle(App::SparkSettings const & settings, float treble) {
+    void SparkParticleSystem::SpawnParticle(App::SparkSettings const & settings, float treble, float speedMultiplier, float brightnessMultiplier) {
         if (AliveCount >= Capacity) {
             return;
         }
@@ -483,7 +497,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         glm::vec3 direction = RandomDirection();
         float radius = 1.f + (ZeroOne(Engine) - 0.5f) * 0.2f;
         particle.Position = direction * radius;
-        float speedScale = settings.Speed * (0.8f + 0.4f * ZeroOne(Engine));
+        float speedScale = settings.Speed * (0.8f + 0.4f * ZeroOne(Engine)) * std::max(0.f, speedMultiplier);
         particle.Velocity = direction * speedScale;
         glm::vec3 tangent = glm::cross(direction, glm::vec3(0.f, 1.f, 0.f));
         if (glm::dot(tangent, tangent) < 1e-6f) {
@@ -501,13 +515,19 @@ namespace VCX::Apps::SphereAudioVisualizer {
         glm::vec3 cool = glm::vec3(0.3f, 0.6f, 1.f);
         float warmth = std::clamp(settings.ColorWarmth, 0.f, 1.f);
         glm::vec3 baseColor = glm::mix(cool, warm, warmth);
-        float brightness = 0.6f + 0.4f * (0.5f + treble);
-        particle.Color = glm::clamp(baseColor * glm::clamp(brightness, 0.f, 1.5f), glm::vec3(0.f), glm::vec3(1.f));
+        float brightness = (0.6f + 0.4f * (0.5f + treble)) * std::max(0.f, brightnessMultiplier);
+        particle.Color = glm::clamp(baseColor * glm::clamp(brightness, 0.f, 3.f), glm::vec3(0.f), glm::vec3(1.f));
 
         ++AliveCount;
     }
 
-    void SparkParticleSystem::Update(float deltaTime, float bass, float treble, App::SparkSettings const & settings) {
+    void SparkParticleSystem::Update(float deltaTime,
+            float bass,
+            float treble,
+            App::SparkSettings const & settings,
+            int burstCount,
+            float burstSpeedBoost,
+            float burstBrightnessBoost) {
         if (Capacity <= 0) {
             Reset();
             return;
@@ -526,10 +546,20 @@ namespace VCX::Apps::SphereAudioVisualizer {
             spawnCount = std::clamp(desired, 0, available);
             SpawnAccumulator -= static_cast<float>(spawnCount);
             for (int i = 0; i < spawnCount; ++i) {
-                SpawnParticle(settings, treble);
+                SpawnParticle(settings, treble, 1.f, 1.f);
             }
         }
-        SpawnedThisFrame = spawnCount;
+        int totalSpawned = spawnCount;
+
+        if (burstCount > 0 && settings.Enable) {
+            int available = Capacity - AliveCount;
+            int burst = std::clamp(burstCount, 0, available);
+            for (int i = 0; i < burst; ++i) {
+                SpawnParticle(settings, treble, burstSpeedBoost, burstBrightnessBoost);
+            }
+            totalSpawned += burst;
+        }
+        SpawnedThisFrame = totalSpawned;
 
         int i = 0;
         float lifeSum = 0.f;
@@ -737,7 +767,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
     }
 
     void App::RenderBloomPasses(glm::ivec2 const & size) {
-        if (!_bloomSettings.Enable || !_hdrFramebufferValid) {
+        if (!_renderToggles.Bloom || !_bloomSettings.Enable || !_hdrFramebufferValid) {
             _bloomMs = 0.f;
             return;
         }
@@ -824,19 +854,40 @@ namespace VCX::Apps::SphereAudioVisualizer {
             _sparkSystem = std::make_unique<SparkParticleSystem>();
         }
         _sparkSystem->EnsureCapacity(_sparkSettings.MaxParticles);
-        _sparkSystem->Update(deltaTime, _audioBass, _audioTreble, _sparkSettings);
+
+        _burstCooldownTimer = std::max(0.f, _burstCooldownTimer - deltaTime);
+        int burstCount = 0;
+        float speedBoost = std::max(0.f, _sparkSettings.BurstSpeedBoost);
+        float brightnessBoost = std::max(0.f, _sparkSettings.BurstBrightnessBoost);
+        if (_sparkSettings.Enable && _sparkSettings.EnableBurst && _burstCooldownTimer <= 0.f) {
+            float threshold = std::clamp(_sparkSettings.BeatThreshold, 0.f, 2.f);
+            float rise = _audioBass - _prevBass;
+            bool risingEdge = rise > 0.015f;
+            if (risingEdge && _audioBass >= threshold) {
+                burstCount = std::clamp(_sparkSettings.BurstCount, 0, _sparkSettings.MaxParticles);
+                _burstCooldownTimer = std::max(0.01f, _sparkSettings.BurstCooldown);
+            }
+        }
+        _prevBass = _audioBass;
+
+        _sparkSystem->Update(deltaTime, _audioBass, _audioTreble, _sparkSettings, burstCount, speedBoost, brightnessBoost);
     }
 
     void App::RenderSparks(glm::ivec2 const & size) {
         if (!_sparkSettings.Enable || !_sparkSystem || _sparkSystem->AliveCount <= 0) {
+            _sparkMs = 0.f;
             return;
         }
         if (size.x <= 0 || size.y <= 0) {
+            _sparkMs = 0.f;
             return;
         }
         if (_sparkProgram.Get() == 0 || _sparkSystem->Instances.empty()) {
+            _sparkMs = 0.f;
             return;
         }
+
+        auto const t0 = std::chrono::high_resolution_clock::now();
 
         float aspect = static_cast<float>(size.x) / static_cast<float>(size.y);
         auto const view = _camera.GetViewMatrix();
@@ -887,6 +938,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         uniforms.SetByName("uCameraUp", up);
         uniforms.SetByName("uSize", _sparkSettings.Size);
         uniforms.SetByName("uStreak", _sparkSettings.Streak);
+        uniforms.SetByName("uMotionBlurEnabled", _sparkSettings.MotionBlur ? 1 : 0);
+        uniforms.SetByName("uMotionBlurStrength", _sparkSettings.MotionBlurStrength);
 
         {
             auto const progUse = _sparkProgram.Use();
@@ -906,6 +959,9 @@ namespace VCX::Apps::SphereAudioVisualizer {
             glDisable(GL_DEPTH_TEST);
         }
         glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        auto const t1 = std::chrono::high_resolution_clock::now();
+        _sparkMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
     }
 
     std::filesystem::path App::ConfigFilePath() const {
@@ -1795,6 +1851,12 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
         ResetStatsBuffer();
 
+        GLboolean depthBefore = glIsEnabled(GL_DEPTH_TEST);
+        GLint depthMaskBefore = 0;
+        glGetIntegerv(GL_DEPTH_WRITEMASK, &depthMaskBefore);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+
         GLboolean blendBefore = glIsEnabled(GL_BLEND);
         GLint prevSrcRgb = 0;
         GLint prevDstRgb = 0;
@@ -1857,6 +1919,13 @@ namespace VCX::Apps::SphereAudioVisualizer {
             glDisable(GL_BLEND);
         }
 
+        glDepthMask(depthMaskBefore != 0 ? GL_TRUE : GL_FALSE);
+        if (depthBefore) {
+            glEnable(GL_DEPTH_TEST);
+        } else {
+            glDisable(GL_DEPTH_TEST);
+        }
+
         glBindTexture(GL_TEXTURE_3D, 0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, 0);
@@ -1901,13 +1970,17 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
     void App::RenderBackground([[maybe_unused]] float deltaTime) {
         if (!_backgroundSettings.Enable) {
+            _backgroundMs = 0.f;
             return;
         }
 
         auto const windowSize = VCX::Engine::GetCurrentWindowSize();
         if (windowSize.first == 0 || windowSize.second == 0) {
+            _backgroundMs = 0.f;
             return;
         }
+
+        auto const t0 = std::chrono::high_resolution_clock::now();
 
         GLboolean depthTestEnabled = glIsEnabled(GL_DEPTH_TEST);
         GLint depthWriteMask = 0;
@@ -1939,6 +2012,9 @@ namespace VCX::Apps::SphereAudioVisualizer {
         } else {
             glDisable(GL_DEPTH_TEST);
         }
+
+        auto const t1 = std::chrono::high_resolution_clock::now();
+        _backgroundMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
     }
 
     void App::RenderToneMappedResult(glm::ivec2 const & size) {
@@ -1954,14 +2030,15 @@ namespace VCX::Apps::SphereAudioVisualizer {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, _hdrColor.Get());
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, (_bloomSettings.Enable && _bloomResourcesValid) ? _bloomBrightTexture.Get() : 0);
+        bool bloomActive = _renderToggles.Bloom && _bloomSettings.Enable && _bloomResourcesValid;
+        glBindTexture(GL_TEXTURE_2D, bloomActive ? _bloomBrightTexture.Get() : 0);
 
         auto & uniforms = _tonemapProgram.GetUniforms();
         uniforms.SetByName("u_resolution", glm::vec2(static_cast<float>(size.x), static_cast<float>(size.y)));
         uniforms.SetByName("u_hdrTexture", 0);
         uniforms.SetByName("u_bloomTexture", 1);
         uniforms.SetByName("u_bloomStrength", _bloomSettings.Strength);
-        uniforms.SetByName("u_bloomEnabled", (_bloomSettings.Enable && _bloomResourcesValid) ? 1 : 0);
+        uniforms.SetByName("u_bloomEnabled", bloomActive ? 1 : 0);
         uniforms.SetByName("u_exposure", _toneMappingSettings.Exposure);
         uniforms.SetByName("u_mode", static_cast<int>(_toneMappingSettings.Mode));
 
@@ -1999,12 +2076,35 @@ namespace VCX::Apps::SphereAudioVisualizer {
         _cameraManager.ProcessInput(_camera, ImGui::GetMousePos());
         _cameraManager.Update(_camera);
         UpdateAudioAnalysis(deltaTime);
-        RenderBackground(deltaTime);
-        RenderVolume(deltaTime);
-        UpdateSparks(deltaTime);
-        RenderSparks(viewport);
+        if (_renderToggles.Background) {
+            RenderBackground(deltaTime);
+        } else {
+            _backgroundMs = 0.f;
+        }
 
-        RenderBloomPasses(viewport);
+        if (_renderToggles.Volume) {
+            RenderVolume(deltaTime);
+        } else {
+            _renderMs = 0.f;
+        }
+
+        if (_renderToggles.Sparks) {
+            UpdateSparks(deltaTime);
+            RenderSparks(viewport);
+        } else {
+            _sparkMs = 0.f;
+        }
+
+        if (_renderToggles.Bloom) {
+            RenderBloomPasses(viewport);
+        } else {
+            _bloomMs = 0.f;
+        }
+
+        LogIfSlow("Background pass", _backgroundMs, 16.7f, _time);
+        LogIfSlow("Volume pass", _renderMs, 16.7f, _time);
+        LogIfSlow("Sparks pass", _sparkMs, 16.7f, _time);
+        LogIfSlow("Bloom pass", _bloomMs, 16.7f, _time);
 
         if (hdrReady) {
             RenderToneMappedResult(viewport);
@@ -2026,6 +2126,16 @@ namespace VCX::Apps::SphereAudioVisualizer {
             SaveConfig();
         }
         ImGui::SliderFloat("alpha", &_alpha, 0.f, 1.f);
+        ImGui::Separator();
+        ImGui::Text("Pass Toggles");
+        ImGui::Checkbox("Background", &_renderToggles.Background);
+        ImGui::SameLine();
+        ImGui::Checkbox("Volume", &_renderToggles.Volume);
+        ImGui::SameLine();
+        ImGui::Checkbox("Sparks", &_renderToggles.Sparks);
+        ImGui::SameLine();
+        ImGui::Checkbox("Bloom", &_renderToggles.Bloom);
+        ImGui::Text("Pass times (ms): BG %.2f | Volume %.2f | Sparks %.2f | Bloom %.2f", _backgroundMs, _renderMs, _sparkMs, _bloomMs);
         if (ImGui::CollapsingHeader("Background", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Checkbox("Enable Background", &_backgroundSettings.Enable);
             const char * modeNames[] = { "Gradient", "Starfield", "Nebula" };
@@ -2202,16 +2312,38 @@ namespace VCX::Apps::SphereAudioVisualizer {
             if (ImGui::SliderFloat("Streak", &_sparkSettings.Streak, 0.1f, 3.f)) {
                 _sparkSettings.Streak = std::max(0.05f, _sparkSettings.Streak);
             }
+            ImGui::Checkbox("Motion Blur", &_sparkSettings.MotionBlur);
+            if (ImGui::SliderFloat("Motion Blur Strength", &_sparkSettings.MotionBlurStrength, 0.f, 4.f)) {
+                _sparkSettings.MotionBlurStrength = std::max(0.f, _sparkSettings.MotionBlurStrength);
+            }
             if (ImGui::SliderFloat("Drag", &_sparkSettings.Drag, 0.f, 4.f)) {
                 _sparkSettings.Drag = std::max(0.f, _sparkSettings.Drag);
             }
             if (ImGui::SliderFloat("Color Warmth", &_sparkSettings.ColorWarmth, 0.f, 1.f)) {
                 _sparkSettings.ColorWarmth = std::clamp(_sparkSettings.ColorWarmth, 0.f, 1.f);
             }
+            ImGui::Separator();
+            ImGui::Text("Beat Burst");
+            ImGui::Checkbox("Enable Burst", &_sparkSettings.EnableBurst);
+            ImGui::SliderFloat("Beat Threshold", &_sparkSettings.BeatThreshold, 0.f, 1.5f);
+            int burstCount = _sparkSettings.BurstCount;
+            if (ImGui::SliderInt("Burst Count", &burstCount, 0, 5000)) {
+                _sparkSettings.BurstCount = std::clamp(burstCount, 0, _sparkSettings.MaxParticles);
+            }
+            if (ImGui::SliderFloat("Burst Cooldown (s)", &_sparkSettings.BurstCooldown, 0.05f, 2.f)) {
+                _sparkSettings.BurstCooldown = std::max(0.01f, _sparkSettings.BurstCooldown);
+            }
+            if (ImGui::SliderFloat("Burst Speed Boost", &_sparkSettings.BurstSpeedBoost, 1.f, 5.f)) {
+                _sparkSettings.BurstSpeedBoost = std::max(1.f, _sparkSettings.BurstSpeedBoost);
+            }
+            if (ImGui::SliderFloat("Burst Brightness", &_sparkSettings.BurstBrightnessBoost, 1.f, 4.f)) {
+                _sparkSettings.BurstBrightnessBoost = std::max(1.f, _sparkSettings.BurstBrightnessBoost);
+            }
             if (_sparkSystem) {
                 ImGui::Text("Particles alive: %d", _sparkSystem->AliveCount);
                 ImGui::Text("Spawned this frame: %d", _sparkSystem->SpawnedThisFrame);
                 ImGui::Text("Average life: %.3f s", _sparkSystem->AvgLife);
+                ImGui::Text("Burst cooldown: %.2f s", _burstCooldownTimer);
             }
         }
 

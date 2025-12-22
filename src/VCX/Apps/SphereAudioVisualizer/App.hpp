@@ -83,6 +83,14 @@ namespace VCX::Apps::SphereAudioVisualizer {
             float Streak = 1.5f;
             float Drag = 0.8f;
             float ColorWarmth = 0.85f;
+            bool MotionBlur = true;
+            float MotionBlurStrength = 1.25f;
+            bool EnableBurst = true;
+            float BeatThreshold = 0.55f;
+            int BurstCount = 900;
+            float BurstCooldown = 0.45f;
+            float BurstSpeedBoost = 2.f;
+            float BurstBrightnessBoost = 1.8f;
         };
 
     private:
@@ -97,6 +105,13 @@ namespace VCX::Apps::SphereAudioVisualizer {
             float AlphaScale  = 1.f;
             ColorMode Mode    = ColorMode::Gradient;
             bool  EnableJitter = true;
+        };
+
+        struct RenderToggles {
+            bool Background = true;
+            bool Volume = true;
+            bool Sparks = true;
+            bool Bloom = true;
         };
 
         enum class BackgroundMode : int {
@@ -223,6 +238,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         float _volumeUploadMs = 0.f;
         float _gpuBuildMs = 0.f;
         float _renderMs = 0.f;
+        float _backgroundMs = 0.f;
+        float _sparkMs = 0.f;
         std::size_t _fftUpdatesPerSecond = 0;
         std::size_t _fftUpdateCounter = 0;
         std::size_t _audioReadable = 0;
@@ -241,6 +258,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         VCX::Labs::Common::OrbitCameraManager _cameraManager;
         VCX::Engine::GL::UniqueTexture2D _transferLutTexture;
         RenderSettings _renderSettings;
+        RenderToggles _renderToggles;
         DynamicSettings _dynamicSettings;
         SparkSettings _sparkSettings;
         BackgroundSettings _backgroundSettings;
@@ -268,6 +286,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         uint64_t _accumulatedEarly = 0;
         uint32_t _frameIndex = 0;
         float _time = 0.f;
+        float _prevBass = 0.f;
+        float _burstCooldownTimer = 0.f;
         bool _computeSupported = false;
         bool _forceCpuBuild = false;
         bool _useGpuBuild = true;
