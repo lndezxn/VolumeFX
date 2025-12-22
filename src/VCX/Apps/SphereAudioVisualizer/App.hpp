@@ -84,6 +84,21 @@ namespace VCX::Apps::SphereAudioVisualizer {
             bool  EnableJitter = true;
         };
 
+        enum class BackgroundMode : int {
+            Gradient = 0,
+            Starfield,
+            Nebula,
+        };
+
+        struct BackgroundSettings {
+            bool Enable = true;
+            BackgroundMode Mode = BackgroundMode::Gradient;
+            float Intensity = 0.9f;
+            float Speed = 1.0f;
+            glm::vec3 ColorA = glm::vec3(0.04f, 0.04f, 0.1f);
+            glm::vec3 ColorB = glm::vec3(0.25f, 0.12f, 0.45f);
+        };
+
         struct StatsSnapshot {
             float AvgSteps       = 0.f;
             float EarlyExitRatio = 0.f;
@@ -124,6 +139,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         };
 
         void RenderVolume(float deltaTime);
+        void RenderBackground(float deltaTime);
         void ResetStatsBuffer();
         void LogDynamicParam(char const * name, float value);
         void RenderAudioUI();
@@ -134,6 +150,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         glm::vec4 EvaluateTransferFunction(float sample) const;
         static char const * ColorModeName(ColorMode mode);
         static bool TryParseColorMode(std::string const & value, ColorMode & out);
+        static char const * BackgroundModeName(BackgroundMode mode);
         void LoadConfig();
         void SaveConfig();
         std::filesystem::path ConfigFilePath() const;
@@ -161,6 +178,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         float _fftLogTimer = 0.f;
         float _volumeLogTimer = 0.f;
         float _audioBass = 0.f;
+        float _audioTreble = 0.f;
         float _volumeBuildMs = 0.f;
         float _volumeUploadMs = 0.f;
         float _gpuBuildMs = 0.f;
@@ -168,6 +186,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         std::size_t _fftUpdatesPerSecond = 0;
         std::size_t _fftUpdateCounter = 0;
         std::size_t _audioReadable = 0;
+        VCX::Engine::GL::UniqueProgram _backgroundProgram;
         VCX::Engine::GL::UniqueProgram _volumeProgram;
         VCX::Engine::GL::UniqueVertexArray _fullscreenVAO;
         VCX::Engine::GL::UniqueArrayBuffer _fullscreenVBO;
@@ -176,6 +195,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         VCX::Engine::GL::UniqueTexture2D _transferLutTexture;
         RenderSettings _renderSettings;
         DynamicSettings _dynamicSettings;
+        BackgroundSettings _backgroundSettings;
         StatsSnapshot _statsSnapshot;
         GLuint _statsBuffer = 0;
         float _statsTimer = 0.f;

@@ -295,6 +295,58 @@ namespace VCX::Apps::SphereAudioVisualizer {
             return glm::vec3(node[0].as<float>(fallback.r), node[1].as<float>(fallback.g), node[2].as<float>(fallback.b));
         }
 
+        void LogShaderProgramCompilation(GLuint program, char const * label) {
+            if (program == 0) {
+                spdlog::warn("Shader program {} is not available.", label);
+                return;
+            }
+            GLint logLength = 0;
+            glGetProgramiv(program, GL_INFO_LOG_LENGTH, &logLength);
+            std::string log;
+            if (logLength > 1) {
+                log.resize(static_cast<std::size_t>(logLength));
+                GLsizei written = 0;
+                glGetProgramInfoLog(program, logLength, &written, log.data());
+                log.resize(static_cast<std::size_t>(written));
+            }
+            if (log.empty()) {
+                log = "(empty)";
+            }
+            spdlog::info("Shader program {} info log:\n{}", label, log);
+
+            GLint shaderCount = 0;
+            glGetProgramiv(program, GL_ATTACHED_SHADERS, &shaderCount);
+            if (shaderCount <= 0) {
+                return;
+            }
+
+            std::vector<GLuint> shaders(static_cast<std::size_t>(shaderCount));
+            glGetAttachedShaders(program, shaderCount, nullptr, shaders.data());
+            for (auto shader : shaders) {
+                GLint shaderType = 0;
+                glGetShaderiv(shader, GL_SHADER_TYPE, &shaderType);
+                GLint shaderLogLength = 0;
+                glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &shaderLogLength);
+                if (shaderLogLength <= 1) {
+                    continue;
+                }
+                std::string shaderLog(shaderLogLength, '\0');
+                GLsizei written = 0;
+                glGetShaderInfoLog(shader, shaderLogLength, &written, shaderLog.data());
+                shaderLog.resize(static_cast<std::size_t>(written));
+                if (shaderLog.empty()) {
+                    continue;
+                }
+                char const * stage = "shader";
+                if (shaderType == GL_VERTEX_SHADER) {
+                    stage = "vertex";
+                } else if (shaderType == GL_FRAGMENT_SHADER) {
+                    stage = "fragment";
+                }
+                spdlog::info("Shader program {} {} stage log:\n{}", label, stage, shaderLog);
+            }
+        }
+
         bool ParseGLVersion(std::string const & value, int & major, int & minor) {
             major = 0;
             minor = 0;
@@ -382,6 +434,18 @@ namespace VCX::Apps::SphereAudioVisualizer {
             return true;
         }
         return false;
+    }
+
+    char const * App::BackgroundModeName(BackgroundMode mode) {
+        switch (mode) {
+        case BackgroundMode::Starfield:
+            return "Starfield";
+        case BackgroundMode::Nebula:
+            return "Nebula";
+        case BackgroundMode::Gradient:
+        default:
+            return "Gradient";
+        }
     }
 
     void EnsureLogger() {
@@ -611,12 +675,17 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
     App::App():
         _alpha(0.5f),
+        _backgroundProgram({
+            VCX::Engine::GL::SharedShader("assets/shaders/spherevis_bg.vert"),
+            VCX::Engine::GL::SharedShader("assets/shaders/spherevis_bg.frag"),
+        }),
         _volumeProgram({
             VCX::Engine::GL::SharedShader("assets/shaders/spherevis_volume.vert"),
             VCX::Engine::GL::SharedShader("assets/shaders/spherevis_volume.frag"),
         }) {
         SetupLogger();
         InitGLCapabilities();
+        LogShaderProgramCompilation(_backgroundProgram.Get(), "spherevis_bg");
         _useGpuBuild = _computeSupported;
         _buildOnEnergyUpdate = true;
         spdlog::debug("SphereAudioVisualizer initialized.");
@@ -634,6 +703,18 @@ namespace VCX::Apps::SphereAudioVisualizer {
         glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(StatsData), nullptr, GL_DYNAMIC_COPY);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
         ResetStatsBuffer();
+
+        GLboolean blendBefore = glIsEnabled(GL_BLEND);
+        GLint prevSrcRgb = 0;
+        GLint prevDstRgb = 0;
+        GLint prevSrcAlpha = 0;
+        GLint prevDstAlpha = 0;
+        glGetIntegerv(GL_BLEND_SRC_RGB, &prevSrcRgb);
+        glGetIntegerv(GL_BLEND_DST_RGB, &prevDstRgb);
+        glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevSrcAlpha);
+        glGetIntegerv(GL_BLEND_DST_ALPHA, &prevDstAlpha);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
         _volumeProgram.GetUniforms().SetByName("uVolumeTexture", 0);
         _transferLutTexture.SetUnit(1);
@@ -1111,6 +1192,16 @@ namespace VCX::Apps::SphereAudioVisualizer {
         }
         _audioBass = bassBands > 0 ? bassSum / static_cast<float>(bassBands) : 0.f;
 
+        int const bandCount = static_cast<int>(state.BandEnergies.size());
+        int trebleStart = std::max(0, bandCount - 3);
+        float trebleSum = 0.f;
+        int trebleCount = 0;
+        for (int i = trebleStart; i < bandCount; ++i) {
+            trebleSum += state.BandEnergies[static_cast<std::size_t>(i)];
+            ++trebleCount;
+        }
+        _audioTreble = trebleCount > 0 ? trebleSum / static_cast<float>(trebleCount) : 0.f;
+
         if (!state.Spectrum.empty()) {
             DownsampleSpectrum(state.Spectrum, state.SpectrumDownsample, 128);
         } else {
@@ -1198,7 +1289,17 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
         ResetStatsBuffer();
 
-        _time += deltaTime;
+        GLboolean blendBefore = glIsEnabled(GL_BLEND);
+        GLint prevSrcRgb = 0;
+        GLint prevDstRgb = 0;
+        GLint prevSrcAlpha = 0;
+        GLint prevDstAlpha = 0;
+        glGetIntegerv(GL_BLEND_SRC_RGB, &prevSrcRgb);
+        glGetIntegerv(GL_BLEND_DST_RGB, &prevDstRgb);
+        glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevSrcAlpha);
+        glGetIntegerv(GL_BLEND_DST_ALPHA, &prevDstAlpha);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
         auto const aspect = float(windowSize.first) / float(windowSize.second);
         auto const view = _camera.GetViewMatrix();
@@ -1245,6 +1346,11 @@ namespace VCX::Apps::SphereAudioVisualizer {
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
 
+        glBlendFuncSeparate(prevSrcRgb, prevDstRgb, prevSrcAlpha, prevDstAlpha);
+        if (!blendBefore) {
+            glDisable(GL_BLEND);
+        }
+
         glBindTexture(GL_TEXTURE_3D, 0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, 0);
@@ -1287,11 +1393,55 @@ namespace VCX::Apps::SphereAudioVisualizer {
         ++_frameIndex;
     }
 
+    void App::RenderBackground([[maybe_unused]] float deltaTime) {
+        if (!_backgroundSettings.Enable) {
+            return;
+        }
+
+        auto const windowSize = VCX::Engine::GetCurrentWindowSize();
+        if (windowSize.first == 0 || windowSize.second == 0) {
+            return;
+        }
+
+        GLboolean depthTestEnabled = glIsEnabled(GL_DEPTH_TEST);
+        GLint depthWriteMask = 0;
+        glGetIntegerv(GL_DEPTH_WRITEMASK, &depthWriteMask);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+
+        glm::vec2 resolution(static_cast<float>(windowSize.first), static_cast<float>(windowSize.second));
+        auto & uniforms = _backgroundProgram.GetUniforms();
+        uniforms.SetByName("u_resolution", resolution);
+        uniforms.SetByName("u_time", _time);
+        uniforms.SetByName("u_audioBass", _audioBass);
+        uniforms.SetByName("u_audioTreble", _audioTreble);
+        uniforms.SetByName("u_mode", static_cast<int>(_backgroundSettings.Mode));
+        uniforms.SetByName("u_intensity", _backgroundSettings.Intensity);
+        uniforms.SetByName("u_speed", _backgroundSettings.Speed);
+        uniforms.SetByName("u_colorA", _backgroundSettings.ColorA);
+        uniforms.SetByName("u_colorB", _backgroundSettings.ColorB);
+
+        {
+            auto const progUse = _backgroundProgram.Use();
+            auto const vaoUse = _fullscreenVAO.Use();
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+
+        glDepthMask(depthWriteMask != 0 ? GL_TRUE : GL_FALSE);
+        if (depthTestEnabled) {
+            glEnable(GL_DEPTH_TEST);
+        } else {
+            glDisable(GL_DEPTH_TEST);
+        }
+    }
+
     void App::OnFrame() {
         float const deltaTime = VCX::Engine::GetDeltaTime();
+        _time += deltaTime;
         _cameraManager.ProcessInput(_camera, ImGui::GetMousePos());
         _cameraManager.Update(_camera);
         UpdateAudioAnalysis(deltaTime);
+        RenderBackground(deltaTime);
         RenderVolume(deltaTime);
 
         ImGui::Begin("Sphere Audio Visualizer");
@@ -1308,6 +1458,23 @@ namespace VCX::Apps::SphereAudioVisualizer {
             SaveConfig();
         }
         ImGui::SliderFloat("alpha", &_alpha, 0.f, 1.f);
+        if (ImGui::CollapsingHeader("Background", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Checkbox("Enable Background", &_backgroundSettings.Enable);
+            const char * modeNames[] = { "Gradient", "Starfield", "Nebula" };
+            int modeIndex = static_cast<int>(_backgroundSettings.Mode);
+            if (ImGui::Combo("Mode", &modeIndex, modeNames, IM_ARRAYSIZE(modeNames))) {
+                modeIndex = std::clamp(modeIndex, 0, static_cast<int>(BackgroundMode::Nebula));
+                auto newMode = static_cast<BackgroundMode>(modeIndex);
+                if (newMode != _backgroundSettings.Mode) {
+                    _backgroundSettings.Mode = newMode;
+                    spdlog::info("Background mode switched to {}", BackgroundModeName(newMode));
+                }
+            }
+            ImGui::SliderFloat("Intensity", &_backgroundSettings.Intensity, 0.f, 2.f);
+            ImGui::SliderFloat("Speed", &_backgroundSettings.Speed, 0.1f, 4.f);
+            ImGui::ColorEdit3("Color A", glm::value_ptr(_backgroundSettings.ColorA));
+            ImGui::ColorEdit3("Color B", glm::value_ptr(_backgroundSettings.ColorB));
+        }
         ImGui::Separator();
 
         RenderAudioUI();
