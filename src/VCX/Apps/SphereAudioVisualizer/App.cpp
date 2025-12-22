@@ -14,11 +14,13 @@
 #include <limits>
 #include <mutex>
 #include <numeric>
+#include <random>
 #include <string>
 #include <vector>
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/constants.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui.h>
 #include <spdlog/sinks/basic_file_sink.h>
@@ -39,6 +41,15 @@ namespace VCX::Apps::SphereAudioVisualizer {
             -1.f, -1.f,
              3.f, -1.f,
             -1.f,  3.f,
+        };
+
+        constexpr auto kSparkQuadVertices = std::array<float, 12> {
+            -0.5f, 0.f,
+             0.5f, 0.f,
+            -0.5f, 1.f,
+             0.5f, 0.f,
+             0.5f, 1.f,
+            -0.5f, 1.f,
         };
 
         constexpr glm::vec3 kVolumeMin { -1.f };
@@ -391,6 +402,169 @@ namespace VCX::Apps::SphereAudioVisualizer {
         }
     }
 
+    struct SparkParticleSystem {
+        struct Particle {
+            glm::vec3 Position;
+            glm::vec3 Velocity;
+            float Life = 0.f;
+            float MaxLife = 0.f;
+            glm::vec3 Color = glm::vec3(1.f);
+        };
+
+        struct InstanceData {
+            glm::vec4 PositionLife;
+            glm::vec4 VelocityMaxLife;
+            glm::vec4 Color;
+        };
+
+        std::vector<Particle> Particles;
+        std::vector<InstanceData> Instances;
+        int AliveCount = 0;
+        int SpawnedThisFrame = 0;
+        float AvgLife = 0.f;
+        float SpawnAccumulator = 0.f;
+        int Capacity = 0;
+
+        std::mt19937 Engine;
+        std::uniform_real_distribution<float> ZeroOne;
+        std::uniform_real_distribution<float> MinusOneOne;
+        std::uniform_real_distribution<float> Angle;
+
+        SparkParticleSystem() noexcept;
+        void EnsureCapacity(int maxParticles);
+        void Reset();
+        void Update(float deltaTime, float bass, float treble, App::SparkSettings const & settings);
+        void FillInstances();
+        void SpawnParticle(App::SparkSettings const & settings, float treble);
+        glm::vec3 RandomDirection();
+    };
+
+    SparkParticleSystem::SparkParticleSystem() noexcept:
+        Engine(std::random_device{}()),
+        ZeroOne(0.f, 1.f),
+        MinusOneOne(-1.f, 1.f),
+        Angle(0.f, glm::two_pi<float>()) {
+    }
+
+    void SparkParticleSystem::EnsureCapacity(int maxParticles) {
+        maxParticles = std::max(0, maxParticles);
+        if (maxParticles == Capacity) {
+            return;
+        }
+        if (maxParticles < AliveCount) {
+            AliveCount = maxParticles;
+        }
+        Capacity = maxParticles;
+        Particles.resize(maxParticles);
+        Instances.resize(maxParticles);
+    }
+
+    void SparkParticleSystem::Reset() {
+        AliveCount = 0;
+        SpawnedThisFrame = 0;
+        AvgLife = 0.f;
+        SpawnAccumulator = 0.f;
+        Instances.clear();
+        Instances.resize(0);
+    }
+
+    glm::vec3 SparkParticleSystem::RandomDirection() {
+        float z = MinusOneOne(Engine);
+        float theta = Angle(Engine);
+        float r = std::sqrt(std::max(0.f, 1.f - z * z));
+        return glm::vec3(r * std::cos(theta), r * std::sin(theta), z);
+    }
+
+    void SparkParticleSystem::SpawnParticle(App::SparkSettings const & settings, float treble) {
+        if (AliveCount >= Capacity) {
+            return;
+        }
+        auto & particle = Particles[AliveCount];
+        glm::vec3 direction = RandomDirection();
+        float radius = 1.f + (ZeroOne(Engine) - 0.5f) * 0.2f;
+        particle.Position = direction * radius;
+        float speedScale = settings.Speed * (0.8f + 0.4f * ZeroOne(Engine));
+        particle.Velocity = direction * speedScale;
+        glm::vec3 tangent = glm::cross(direction, glm::vec3(0.f, 1.f, 0.f));
+        if (glm::dot(tangent, tangent) < 1e-6f) {
+            tangent = glm::cross(direction, glm::vec3(1.f, 0.f, 0.f));
+        }
+        tangent = glm::normalize(tangent);
+        glm::vec3 bitangent = glm::normalize(glm::cross(direction, tangent));
+        float swirl = 0.35f;
+        particle.Velocity += tangent * (ZeroOne(Engine) - 0.5f) * speedScale * swirl;
+        particle.Velocity += bitangent * (ZeroOne(Engine) - 0.5f) * speedScale * swirl;
+
+        particle.MaxLife = 0.3f + ZeroOne(Engine) * 0.9f;
+        particle.Life = particle.MaxLife;
+        glm::vec3 warm = glm::vec3(1.f, 0.7f, 0.3f);
+        glm::vec3 cool = glm::vec3(0.3f, 0.6f, 1.f);
+        float warmth = std::clamp(settings.ColorWarmth, 0.f, 1.f);
+        glm::vec3 baseColor = glm::mix(cool, warm, warmth);
+        float brightness = 0.6f + 0.4f * (0.5f + treble);
+        particle.Color = glm::clamp(baseColor * glm::clamp(brightness, 0.f, 1.5f), glm::vec3(0.f), glm::vec3(1.f));
+
+        ++AliveCount;
+    }
+
+    void SparkParticleSystem::Update(float deltaTime, float bass, float treble, App::SparkSettings const & settings) {
+        if (Capacity <= 0) {
+            Reset();
+            return;
+        }
+
+        float spawnRate = 0.f;
+        if (settings.Enable) {
+            spawnRate = settings.SpawnRateBase + settings.SpawnRateBass * bass;
+            spawnRate = std::max(spawnRate, 0.f);
+        }
+        SpawnAccumulator += spawnRate * deltaTime;
+        int desired = static_cast<int>(SpawnAccumulator);
+        int spawnCount = 0;
+        if (desired > 0 && settings.Enable) {
+            int available = Capacity - AliveCount;
+            spawnCount = std::clamp(desired, 0, available);
+            SpawnAccumulator -= static_cast<float>(spawnCount);
+            for (int i = 0; i < spawnCount; ++i) {
+                SpawnParticle(settings, treble);
+            }
+        }
+        SpawnedThisFrame = spawnCount;
+
+        int i = 0;
+        float lifeSum = 0.f;
+        while (i < AliveCount) {
+            auto & particle = Particles[i];
+            particle.Life -= deltaTime;
+            if (particle.Life <= 0.f) {
+                --AliveCount;
+                if (AliveCount > i) {
+                    particle = Particles[AliveCount];
+                }
+                continue;
+            }
+            if (settings.Drag > 0.f) {
+                float dragFactor = std::exp(-settings.Drag * deltaTime);
+                particle.Velocity *= dragFactor;
+            }
+            particle.Position += particle.Velocity * deltaTime;
+            lifeSum += particle.Life;
+            ++i;
+        }
+        AvgLife = AliveCount > 0 ? lifeSum / static_cast<float>(AliveCount) : 0.f;
+        FillInstances();
+    }
+
+    void SparkParticleSystem::FillInstances() {
+        Instances.resize(AliveCount);
+        for (int i = 0; i < AliveCount; ++i) {
+            auto const & particle = Particles[i];
+            Instances[i].PositionLife = glm::vec4(particle.Position, particle.Life);
+            Instances[i].VelocityMaxLife = glm::vec4(particle.Velocity, particle.MaxLife);
+            Instances[i].Color = glm::vec4(particle.Color, 1.f);
+        }
+    }
+
     void App::InitGLCapabilities() {
         auto const vendorPtr = reinterpret_cast<char const *>(glGetString(GL_VENDOR));
         auto const rendererPtr = reinterpret_cast<char const *>(glGetString(GL_RENDERER));
@@ -645,6 +819,95 @@ namespace VCX::Apps::SphereAudioVisualizer {
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
+    void App::UpdateSparks(float deltaTime) {
+        if (!_sparkSystem) {
+            _sparkSystem = std::make_unique<SparkParticleSystem>();
+        }
+        _sparkSystem->EnsureCapacity(_sparkSettings.MaxParticles);
+        _sparkSystem->Update(deltaTime, _audioBass, _audioTreble, _sparkSettings);
+    }
+
+    void App::RenderSparks(glm::ivec2 const & size) {
+        if (!_sparkSettings.Enable || !_sparkSystem || _sparkSystem->AliveCount <= 0) {
+            return;
+        }
+        if (size.x <= 0 || size.y <= 0) {
+            return;
+        }
+        if (_sparkProgram.Get() == 0 || _sparkSystem->Instances.empty()) {
+            return;
+        }
+
+        float aspect = static_cast<float>(size.x) / static_cast<float>(size.y);
+        auto const view = _camera.GetViewMatrix();
+        auto const proj = _camera.GetProjectionMatrix(aspect);
+        glm::vec3 forward = _camera.Target - _camera.Eye;
+        if (glm::dot(forward, forward) < 1e-6f) {
+            forward = glm::vec3(0.f, 0.f, -1.f);
+        } else {
+            forward = glm::normalize(forward);
+        }
+        glm::vec3 worldUp = glm::dot(_camera.Up, _camera.Up) < 1e-6f ? glm::vec3(0.f, 1.f, 0.f) : glm::normalize(_camera.Up);
+        glm::vec3 right = glm::cross(forward, worldUp);
+        if (glm::dot(right, right) < 1e-6f) {
+            right = glm::cross(forward, glm::vec3(1.f, 0.f, 0.f));
+        }
+        right = glm::normalize(right);
+        glm::vec3 up = glm::normalize(glm::cross(right, forward));
+
+        auto const instanceSize = static_cast<GLsizei>(_sparkSystem->Instances.size());
+        glBindBuffer(GL_ARRAY_BUFFER, _sparkInstanceVBO.Get());
+        glBufferData(GL_ARRAY_BUFFER,
+            static_cast<GLsizeiptr>(instanceSize * sizeof(SparkParticleSystem::InstanceData)),
+            _sparkSystem->Instances.data(),
+            GL_STREAM_DRAW);
+
+        GLboolean depthEnabled = glIsEnabled(GL_DEPTH_TEST);
+        GLint depthWriteMask = 0;
+        glGetIntegerv(GL_DEPTH_WRITEMASK, &depthWriteMask);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+
+        GLboolean blendEnabled = glIsEnabled(GL_BLEND);
+        GLint prevSrcRgb = 0;
+        GLint prevDstRgb = 0;
+        GLint prevSrcAlpha = 0;
+        GLint prevDstAlpha = 0;
+        glGetIntegerv(GL_BLEND_SRC_RGB, &prevSrcRgb);
+        glGetIntegerv(GL_BLEND_DST_RGB, &prevDstRgb);
+        glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevSrcAlpha);
+        glGetIntegerv(GL_BLEND_DST_ALPHA, &prevDstAlpha);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+
+        auto & uniforms = _sparkProgram.GetUniforms();
+        uniforms.SetByName("uView", view);
+        uniforms.SetByName("uProj", proj);
+        uniforms.SetByName("uCameraRight", right);
+        uniforms.SetByName("uCameraUp", up);
+        uniforms.SetByName("uSize", _sparkSettings.Size);
+        uniforms.SetByName("uStreak", _sparkSettings.Streak);
+
+        {
+            auto const progUse = _sparkProgram.Use();
+            auto const vaoUse = _sparkVAO.Use();
+            GLsizei instanceCount = static_cast<GLsizei>(_sparkSystem->AliveCount);
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, instanceCount);
+        }
+
+        glBlendFuncSeparate(prevSrcRgb, prevDstRgb, prevSrcAlpha, prevDstAlpha);
+        if (!blendEnabled) {
+            glDisable(GL_BLEND);
+        }
+        glDepthMask(depthWriteMask != 0 ? GL_TRUE : GL_FALSE);
+        if (depthEnabled) {
+            glEnable(GL_DEPTH_TEST);
+        } else {
+            glDisable(GL_DEPTH_TEST);
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
     std::filesystem::path App::ConfigFilePath() const {
         return std::filesystem::current_path() / "SphereVisConfig.yaml";
     }
@@ -887,6 +1150,10 @@ namespace VCX::Apps::SphereAudioVisualizer {
         _bloomBlurProgram({
             VCX::Engine::GL::SharedShader("assets/shaders/spherevis_tonemap.vert"),
             VCX::Engine::GL::SharedShader("assets/shaders/spherevis_bloom_blur.frag"),
+        }),
+        _sparkProgram({
+            VCX::Engine::GL::SharedShader("assets/shaders/spherevis_sparks.vert"),
+            VCX::Engine::GL::SharedShader("assets/shaders/spherevis_sparks.frag"),
         }) {
         SetupLogger();
         InitGLCapabilities();
@@ -894,6 +1161,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         LogShaderProgramCompilation(_tonemapProgram.Get(), "spherevis_tonemap");
         LogShaderProgramCompilation(_bloomBrightProgram.Get(), "spherevis_bloom_bright");
         LogShaderProgramCompilation(_bloomBlurProgram.Get(), "spherevis_bloom_blur");
+        LogShaderProgramCompilation(_sparkProgram.Get(), "spherevis_sparks");
         _useGpuBuild = _computeSupported;
         _buildOnEnergyUpdate = true;
         spdlog::debug("SphereAudioVisualizer initialized.");
@@ -904,6 +1172,27 @@ namespace VCX::Apps::SphereAudioVisualizer {
             glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(kFullScreenTriangle.size() * sizeof(float)), kFullScreenTriangle.data(), GL_STATIC_DRAW);
             glEnableVertexAttribArray(0);
             glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+        }
+
+        {
+            auto const vaoUse = _sparkVAO.Use();
+            auto const quadVboUse = _sparkQuadVBO.Use();
+            glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(kSparkQuadVertices.size() * sizeof(float)), kSparkQuadVertices.data(), GL_STATIC_DRAW);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+
+            auto const instanceVboUse = _sparkInstanceVBO.Use();
+            glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_STREAM_DRAW);
+            constexpr GLsizei instanceStride = static_cast<GLsizei>(sizeof(SparkParticleSystem::InstanceData));
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, instanceStride, reinterpret_cast<void *>(offsetof(SparkParticleSystem::InstanceData, PositionLife)));
+            glVertexAttribDivisor(1, 1);
+            glEnableVertexAttribArray(2);
+            glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, instanceStride, reinterpret_cast<void *>(offsetof(SparkParticleSystem::InstanceData, VelocityMaxLife)));
+            glVertexAttribDivisor(2, 1);
+            glEnableVertexAttribArray(3);
+            glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, instanceStride, reinterpret_cast<void *>(offsetof(SparkParticleSystem::InstanceData, Color)));
+            glVertexAttribDivisor(3, 1);
         }
 
         glGenBuffers(1, &_statsBuffer);
@@ -925,6 +1214,9 @@ namespace VCX::Apps::SphereAudioVisualizer {
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
         glGenQueries(1, &_bloomTimeQuery);
+
+        _sparkSystem = std::make_unique<SparkParticleSystem>();
+        _sparkSystem->EnsureCapacity(_sparkSettings.MaxParticles);
 
         _volumeProgram.GetUniforms().SetByName("uVolumeTexture", 0);
         _transferLutTexture.SetUnit(1);
@@ -1709,6 +2001,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         UpdateAudioAnalysis(deltaTime);
         RenderBackground(deltaTime);
         RenderVolume(deltaTime);
+        UpdateSparks(deltaTime);
+        RenderSparks(viewport);
 
         RenderBloomPasses(viewport);
 
@@ -1885,6 +2179,41 @@ namespace VCX::Apps::SphereAudioVisualizer {
         }
 
         RenderTransferFunctionUI();
+
+        ImGui::Separator();
+        if (ImGui::CollapsingHeader("Sparks", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Checkbox("Enable Sparks", &_sparkSettings.Enable);
+            int maxParticles = std::clamp(_sparkSettings.MaxParticles, 0, 60000);
+            if (ImGui::SliderInt("Max Particles", &maxParticles, 0, 60000)) {
+                _sparkSettings.MaxParticles = maxParticles;
+            }
+            if (ImGui::SliderFloat("Base Spawn Rate", &_sparkSettings.SpawnRateBase, 0.f, 400.f)) {
+                _sparkSettings.SpawnRateBase = std::max(0.f, _sparkSettings.SpawnRateBase);
+            }
+            if (ImGui::SliderFloat("Bass Spawn Boost", &_sparkSettings.SpawnRateBass, 0.f, 800.f)) {
+                _sparkSettings.SpawnRateBass = std::max(0.f, _sparkSettings.SpawnRateBass);
+            }
+            if (ImGui::SliderFloat("Spark Speed", &_sparkSettings.Speed, 0.1f, 8.f)) {
+                _sparkSettings.Speed = std::max(0.01f, _sparkSettings.Speed);
+            }
+            if (ImGui::SliderFloat("Size", &_sparkSettings.Size, 0.01f, 0.25f)) {
+                _sparkSettings.Size = std::max(0.001f, _sparkSettings.Size);
+            }
+            if (ImGui::SliderFloat("Streak", &_sparkSettings.Streak, 0.1f, 3.f)) {
+                _sparkSettings.Streak = std::max(0.05f, _sparkSettings.Streak);
+            }
+            if (ImGui::SliderFloat("Drag", &_sparkSettings.Drag, 0.f, 4.f)) {
+                _sparkSettings.Drag = std::max(0.f, _sparkSettings.Drag);
+            }
+            if (ImGui::SliderFloat("Color Warmth", &_sparkSettings.ColorWarmth, 0.f, 1.f)) {
+                _sparkSettings.ColorWarmth = std::clamp(_sparkSettings.ColorWarmth, 0.f, 1.f);
+            }
+            if (_sparkSystem) {
+                ImGui::Text("Particles alive: %d", _sparkSystem->AliveCount);
+                ImGui::Text("Spawned this frame: %d", _sparkSystem->SpawnedThisFrame);
+                ImGui::Text("Average life: %.3f s", _sparkSystem->AvgLife);
+            }
+        }
 
         ImGui::Separator();
         auto const volumeSize = _volumeData.GetVolumeSize();

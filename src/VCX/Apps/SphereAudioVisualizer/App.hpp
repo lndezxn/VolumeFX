@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -20,6 +21,7 @@
 #include "Labs/Common/OrbitCameraManager.h"
 
 namespace VCX::Apps::SphereAudioVisualizer {
+    struct SparkParticleSystem;
     class App : public VCX::Engine::IApp {
     public:
         App();
@@ -70,6 +72,18 @@ namespace VCX::Apps::SphereAudioVisualizer {
         };
 
         static constexpr std::array<int, 4> kFftSizes { 512, 1024, 2048, 4096 };
+
+        struct SparkSettings {
+            bool Enable = true;
+            int MaxParticles = 30000;
+            float SpawnRateBase = 120.f;
+            float SpawnRateBass = 360.f;
+            float Speed = 2.4f;
+            float Size = 0.04f;
+            float Streak = 1.5f;
+            float Drag = 0.8f;
+            float ColorWarmth = 0.85f;
+        };
 
     private:
         enum class ColorMode : int {
@@ -163,6 +177,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         bool EnsureHdrFramebuffer(glm::ivec2 const & size);
         bool EnsureBloomResources(glm::ivec2 const & size);
         void RenderBloomPasses(glm::ivec2 const & size);
+        void UpdateSparks(float deltaTime);
+        void RenderSparks(glm::ivec2 const & size);
         void ResetStatsBuffer();
         void LogDynamicParam(char const * name, float value);
         void RenderAudioUI();
@@ -215,13 +231,18 @@ namespace VCX::Apps::SphereAudioVisualizer {
         VCX::Engine::GL::UniqueProgram _tonemapProgram;
         VCX::Engine::GL::UniqueProgram _bloomBrightProgram;
         VCX::Engine::GL::UniqueProgram _bloomBlurProgram;
+        VCX::Engine::GL::UniqueProgram _sparkProgram;
         VCX::Engine::GL::UniqueVertexArray _fullscreenVAO;
         VCX::Engine::GL::UniqueArrayBuffer _fullscreenVBO;
+        VCX::Engine::GL::UniqueVertexArray _sparkVAO;
+        VCX::Engine::GL::UniqueArrayBuffer _sparkQuadVBO;
+        VCX::Engine::GL::UniqueArrayBuffer _sparkInstanceVBO;
         VCX::Engine::Camera _camera;
         VCX::Labs::Common::OrbitCameraManager _cameraManager;
         VCX::Engine::GL::UniqueTexture2D _transferLutTexture;
         RenderSettings _renderSettings;
         DynamicSettings _dynamicSettings;
+        SparkSettings _sparkSettings;
         BackgroundSettings _backgroundSettings;
         ToneMappingSettings _toneMappingSettings;
         BloomSettings _bloomSettings;
@@ -233,6 +254,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         VCX::Engine::GL::UniqueFramebuffer _bloomTempFbo;
         VCX::Engine::GL::UniqueTexture2D _bloomBrightTexture;
         VCX::Engine::GL::UniqueTexture2D _bloomTempTexture;
+        std::unique_ptr<SparkParticleSystem> _sparkSystem;
         glm::ivec2 _hdrSize { 0, 0 };
         glm::ivec2 _bloomSize { 0, 0 };
         bool _hdrFramebufferValid = false;
