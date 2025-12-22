@@ -110,6 +110,14 @@ namespace VCX::Apps::SphereAudioVisualizer {
             ToneMappingMode Mode = ToneMappingMode::Reinhard;
         };
 
+        struct BloomSettings {
+            bool Enable = true;
+            float Threshold = 1.f;
+            float Knee = 0.5f;
+            float Strength = 0.6f;
+            float BlurRadius = 1.5f;
+        };
+
         struct StatsSnapshot {
             float AvgSteps       = 0.f;
             float EarlyExitRatio = 0.f;
@@ -153,6 +161,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         void RenderBackground(float deltaTime);
         void RenderToneMappedResult(glm::ivec2 const & size);
         bool EnsureHdrFramebuffer(glm::ivec2 const & size);
+        bool EnsureBloomResources(glm::ivec2 const & size);
+        void RenderBloomPasses(glm::ivec2 const & size);
         void ResetStatsBuffer();
         void LogDynamicParam(char const * name, float value);
         void RenderAudioUI();
@@ -203,6 +213,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         VCX::Engine::GL::UniqueProgram _backgroundProgram;
         VCX::Engine::GL::UniqueProgram _volumeProgram;
         VCX::Engine::GL::UniqueProgram _tonemapProgram;
+        VCX::Engine::GL::UniqueProgram _bloomBrightProgram;
+        VCX::Engine::GL::UniqueProgram _bloomBlurProgram;
         VCX::Engine::GL::UniqueVertexArray _fullscreenVAO;
         VCX::Engine::GL::UniqueArrayBuffer _fullscreenVBO;
         VCX::Engine::Camera _camera;
@@ -212,13 +224,22 @@ namespace VCX::Apps::SphereAudioVisualizer {
         DynamicSettings _dynamicSettings;
         BackgroundSettings _backgroundSettings;
         ToneMappingSettings _toneMappingSettings;
+        BloomSettings _bloomSettings;
         StatsSnapshot _statsSnapshot;
         VCX::Engine::GL::UniqueFramebuffer _hdrFbo;
         VCX::Engine::GL::UniqueRenderbuffer _hdrDepth;
         VCX::Engine::GL::UniqueTexture2D _hdrColor;
+        VCX::Engine::GL::UniqueFramebuffer _bloomBrightFbo;
+        VCX::Engine::GL::UniqueFramebuffer _bloomTempFbo;
+        VCX::Engine::GL::UniqueTexture2D _bloomBrightTexture;
+        VCX::Engine::GL::UniqueTexture2D _bloomTempTexture;
         glm::ivec2 _hdrSize { 0, 0 };
+        glm::ivec2 _bloomSize { 0, 0 };
         bool _hdrFramebufferValid = false;
+        bool _bloomResourcesValid = false;
         GLuint _statsBuffer = 0;
+        GLuint _bloomTimeQuery = 0;
+        float _bloomMs = 0.f;
         float _statsTimer = 0.f;
         uint64_t _accumulatedSteps = 0;
         uint64_t _accumulatedRays = 0;

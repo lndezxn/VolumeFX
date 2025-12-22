@@ -513,6 +513,138 @@ namespace VCX::Apps::SphereAudioVisualizer {
         return _hdrFramebufferValid;
     }
 
+    bool App::EnsureBloomResources(glm::ivec2 const & size) {
+        if (size.x <= 0 || size.y <= 0) {
+            _bloomResourcesValid = false;
+            return false;
+        }
+        glm::ivec2 const quarter {
+            std::max(1, size.x / 4),
+            std::max(1, size.y / 4)
+        };
+        if (_bloomResourcesValid && quarter == _bloomSize && _bloomBrightTexture.Get() != 0 && _bloomTempTexture.Get() != 0 && _bloomBrightFbo.Get() != 0 && _bloomTempFbo.Get() != 0) {
+            return true;
+        }
+        _bloomSize = quarter;
+        if (_bloomBrightTexture.Get() == 0) {
+            _bloomBrightTexture = VCX::Engine::GL::UniqueTexture2D();
+        }
+        if (_bloomTempTexture.Get() == 0) {
+            _bloomTempTexture = VCX::Engine::GL::UniqueTexture2D();
+        }
+        if (_bloomBrightFbo.Get() == 0) {
+            _bloomBrightFbo = VCX::Engine::GL::UniqueFramebuffer();
+        }
+        if (_bloomTempFbo.Get() == 0) {
+            _bloomTempFbo = VCX::Engine::GL::UniqueFramebuffer();
+        }
+
+        auto configureTexture = [=](VCX::Engine::GL::UniqueTexture2D & texture) {
+            auto const use = texture.Use();
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, quarter.x, quarter.y, 0, GL_RGBA, GL_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        };
+        configureTexture(_bloomBrightTexture);
+        configureTexture(_bloomTempTexture);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, _bloomBrightFbo.Get());
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _bloomBrightTexture.Get(), 0);
+        bool const brightOk = ValidateFramebufferStatus("BloomBright");
+        glBindFramebuffer(GL_FRAMEBUFFER, _bloomTempFbo.Get());
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _bloomTempTexture.Get(), 0);
+        bool const tempOk = ValidateFramebufferStatus("BloomTemp");
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        _bloomResourcesValid = brightOk && tempOk;
+        return _bloomResourcesValid;
+    }
+
+    void App::RenderBloomPasses(glm::ivec2 const & size) {
+        if (!_bloomSettings.Enable || !_hdrFramebufferValid) {
+            _bloomMs = 0.f;
+            return;
+        }
+        if (!EnsureBloomResources(size)) {
+            _bloomMs = 0.f;
+            return;
+        }
+
+        glm::vec2 const resolution(static_cast<float>(_bloomSize.x), static_cast<float>(_bloomSize.y));
+        GLboolean depthEnabled = glIsEnabled(GL_DEPTH_TEST);
+        GLint depthWriteMask = 0;
+        glGetIntegerv(GL_DEPTH_WRITEMASK, &depthWriteMask);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        if (_bloomTimeQuery == 0) {
+            glGenQueries(1, &_bloomTimeQuery);
+        }
+
+        glBeginQuery(GL_TIME_ELAPSED, _bloomTimeQuery);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, _bloomBrightFbo.Get());
+        glViewport(0, 0, _bloomSize.x, _bloomSize.y);
+        glClearColor(0.f, 0.f, 0.f, 0.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, _hdrColor.Get());
+        auto & brightUniforms = _bloomBrightProgram.GetUniforms();
+        brightUniforms.SetByName("u_resolution", resolution);
+        brightUniforms.SetByName("u_threshold", _bloomSettings.Threshold);
+        brightUniforms.SetByName("u_knee", _bloomSettings.Knee);
+        brightUniforms.SetByName("u_hdrTexture", 0);
+        {
+            auto const progUse = _bloomBrightProgram.Use();
+            auto const vaoUse = _fullscreenVAO.Use();
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+
+        glBindFramebuffer(GL_FRAMEBUFFER, _bloomTempFbo.Get());
+        glViewport(0, 0, _bloomSize.x, _bloomSize.y);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindTexture(GL_TEXTURE_2D, _bloomBrightTexture.Get());
+        auto & blurUniforms = _bloomBlurProgram.GetUniforms();
+        blurUniforms.SetByName("u_resolution", resolution);
+        blurUniforms.SetByName("u_texture", 0);
+        blurUniforms.SetByName("u_direction", glm::vec2(1.f, 0.f));
+        blurUniforms.SetByName("u_blurRadius", _bloomSettings.BlurRadius);
+        {
+            auto const progUse = _bloomBlurProgram.Use();
+            auto const vaoUse = _fullscreenVAO.Use();
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+
+        glBindFramebuffer(GL_FRAMEBUFFER, _bloomBrightFbo.Get());
+        glViewport(0, 0, _bloomSize.x, _bloomSize.y);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindTexture(GL_TEXTURE_2D, _bloomTempTexture.Get());
+        blurUniforms.SetByName("u_direction", glm::vec2(0.f, 1.f));
+        {
+            auto const progUse = _bloomBlurProgram.Use();
+            auto const vaoUse = _fullscreenVAO.Use();
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+
+        glEndQuery(GL_TIME_ELAPSED);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (_bloomTimeQuery != 0) {
+            GLuint64 elapsed = 0;
+            glGetQueryObjectui64v(_bloomTimeQuery, GL_QUERY_RESULT, &elapsed);
+            _bloomMs = static_cast<float>(elapsed) * 1e-6f;
+        }
+
+        glDepthMask(depthWriteMask != 0 ? GL_TRUE : GL_FALSE);
+        if (depthEnabled) {
+            glEnable(GL_DEPTH_TEST);
+        } else {
+            glDisable(GL_DEPTH_TEST);
+        }
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
     std::filesystem::path App::ConfigFilePath() const {
         return std::filesystem::current_path() / "SphereVisConfig.yaml";
     }
@@ -747,11 +879,21 @@ namespace VCX::Apps::SphereAudioVisualizer {
         _tonemapProgram({
             VCX::Engine::GL::SharedShader("assets/shaders/spherevis_tonemap.vert"),
             VCX::Engine::GL::SharedShader("assets/shaders/spherevis_tonemap.frag"),
+        }),
+        _bloomBrightProgram({
+            VCX::Engine::GL::SharedShader("assets/shaders/spherevis_tonemap.vert"),
+            VCX::Engine::GL::SharedShader("assets/shaders/spherevis_bloom_bright.frag"),
+        }),
+        _bloomBlurProgram({
+            VCX::Engine::GL::SharedShader("assets/shaders/spherevis_tonemap.vert"),
+            VCX::Engine::GL::SharedShader("assets/shaders/spherevis_bloom_blur.frag"),
         }) {
         SetupLogger();
         InitGLCapabilities();
         LogShaderProgramCompilation(_backgroundProgram.Get(), "spherevis_bg");
         LogShaderProgramCompilation(_tonemapProgram.Get(), "spherevis_tonemap");
+        LogShaderProgramCompilation(_bloomBrightProgram.Get(), "spherevis_bloom_bright");
+        LogShaderProgramCompilation(_bloomBlurProgram.Get(), "spherevis_bloom_blur");
         _useGpuBuild = _computeSupported;
         _buildOnEnergyUpdate = true;
         spdlog::debug("SphereAudioVisualizer initialized.");
@@ -782,6 +924,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+        glGenQueries(1, &_bloomTimeQuery);
+
         _volumeProgram.GetUniforms().SetByName("uVolumeTexture", 0);
         _transferLutTexture.SetUnit(1);
         _volumeProgram.GetUniforms().SetByName("uTransferLut", 1);
@@ -797,6 +941,10 @@ namespace VCX::Apps::SphereAudioVisualizer {
         if (_statsBuffer) {
             glDeleteBuffers(1, &_statsBuffer);
             _statsBuffer = 0;
+        }
+        if (_bloomTimeQuery) {
+            glDeleteQueries(1, &_bloomTimeQuery);
+            _bloomTimeQuery = 0;
         }
     }
 
@@ -1513,10 +1661,15 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, _hdrColor.Get());
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, (_bloomSettings.Enable && _bloomResourcesValid) ? _bloomBrightTexture.Get() : 0);
 
         auto & uniforms = _tonemapProgram.GetUniforms();
         uniforms.SetByName("u_resolution", glm::vec2(static_cast<float>(size.x), static_cast<float>(size.y)));
         uniforms.SetByName("u_hdrTexture", 0);
+        uniforms.SetByName("u_bloomTexture", 1);
+        uniforms.SetByName("u_bloomStrength", _bloomSettings.Strength);
+        uniforms.SetByName("u_bloomEnabled", (_bloomSettings.Enable && _bloomResourcesValid) ? 1 : 0);
         uniforms.SetByName("u_exposure", _toneMappingSettings.Exposure);
         uniforms.SetByName("u_mode", static_cast<int>(_toneMappingSettings.Mode));
 
@@ -1526,6 +1679,9 @@ namespace VCX::Apps::SphereAudioVisualizer {
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
 
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glDepthMask(GL_TRUE);
         glEnable(GL_DEPTH_TEST);
@@ -1553,6 +1709,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
         UpdateAudioAnalysis(deltaTime);
         RenderBackground(deltaTime);
         RenderVolume(deltaTime);
+
+        RenderBloomPasses(viewport);
 
         if (hdrReady) {
             RenderToneMappedResult(viewport);
@@ -1609,6 +1767,20 @@ namespace VCX::Apps::SphereAudioVisualizer {
             if (ImGui::SliderFloat("Exposure", &_toneMappingSettings.Exposure, 0.1f, 5.f)) {
                 _toneMappingSettings.Exposure = std::max(0.01f, _toneMappingSettings.Exposure);
             }
+            ImGui::Checkbox("Enable Bloom", &_bloomSettings.Enable);
+            if (ImGui::SliderFloat("Threshold", &_bloomSettings.Threshold, 0.f, 5.f)) {
+                _bloomSettings.Threshold = std::max(0.f, _bloomSettings.Threshold);
+            }
+            if (ImGui::SliderFloat("Knee", &_bloomSettings.Knee, 0.f, 2.f)) {
+                _bloomSettings.Knee = std::max(0.f, _bloomSettings.Knee);
+            }
+            if (ImGui::SliderFloat("Strength", &_bloomSettings.Strength, 0.f, 2.f)) {
+                _bloomSettings.Strength = std::max(0.f, _bloomSettings.Strength);
+            }
+            if (ImGui::SliderFloat("Blur Radius", &_bloomSettings.BlurRadius, 0.5f, 3.f)) {
+                _bloomSettings.BlurRadius = std::max(0.01f, _bloomSettings.BlurRadius);
+            }
+            ImGui::Text("Bloom ms: %.2f", _bloomMs);
         }
         ImGui::Separator();
 

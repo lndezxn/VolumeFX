@@ -4,7 +4,10 @@ layout (location = 0) out vec4 fragColor;
 
 uniform vec2 u_resolution;
 uniform sampler2D u_hdrTexture;
+uniform sampler2D u_bloomTexture;
 uniform float u_exposure;
+uniform float u_bloomStrength;
+uniform int u_bloomEnabled;
 uniform int u_mode;
 
 vec3 ReinhardToneMap(vec3 color) {
@@ -24,12 +27,15 @@ vec3 ACESFilm(vec3 color) {
 
 void main() {
     vec2 uv = gl_FragCoord.xy / u_resolution;
-    vec3 hdrColor = texture(u_hdrTexture, uv).rgb * u_exposure;
+    vec3 hdrColor = texture(u_hdrTexture, uv).rgb;
+    vec3 bloomColor = u_bloomEnabled == 1 ? texture(u_bloomTexture, uv).rgb : vec3(0.0);
+    vec3 combined = hdrColor + bloomColor * u_bloomStrength;
+    combined *= u_exposure;
     vec3 mapped;
     if (u_mode == 1) {
-        mapped = ACESFilm(hdrColor);
+        mapped = ACESFilm(combined);
     } else {
-        mapped = ReinhardToneMap(hdrColor);
+        mapped = ReinhardToneMap(combined);
     }
     mapped = pow(mapped, vec3(1.0 / 2.2));
     fragColor = vec4(mapped, 1.0);
