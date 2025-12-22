@@ -14,6 +14,7 @@
 #include "Engine/Camera.hpp"
 #include "Engine/GL/Program.h"
 #include "Engine/GL/resource.hpp"
+#include "Engine/GL/Texture.hpp"
 #include "Engine/TextureND.hpp"
 #include "Engine/app.h"
 #include "Labs/Common/OrbitCameraManager.h"
@@ -99,6 +100,16 @@ namespace VCX::Apps::SphereAudioVisualizer {
             glm::vec3 ColorB = glm::vec3(0.25f, 0.12f, 0.45f);
         };
 
+        enum class ToneMappingMode : int {
+            Reinhard = 0,
+            ACES,
+        };
+
+        struct ToneMappingSettings {
+            float Exposure = 1.1f;
+            ToneMappingMode Mode = ToneMappingMode::Reinhard;
+        };
+
         struct StatsSnapshot {
             float AvgSteps       = 0.f;
             float EarlyExitRatio = 0.f;
@@ -140,6 +151,8 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
         void RenderVolume(float deltaTime);
         void RenderBackground(float deltaTime);
+        void RenderToneMappedResult(glm::ivec2 const & size);
+        bool EnsureHdrFramebuffer(glm::ivec2 const & size);
         void ResetStatsBuffer();
         void LogDynamicParam(char const * name, float value);
         void RenderAudioUI();
@@ -151,6 +164,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         static char const * ColorModeName(ColorMode mode);
         static bool TryParseColorMode(std::string const & value, ColorMode & out);
         static char const * BackgroundModeName(BackgroundMode mode);
+        static char const * ToneMappingModeName(ToneMappingMode mode);
         void LoadConfig();
         void SaveConfig();
         std::filesystem::path ConfigFilePath() const;
@@ -188,6 +202,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         std::size_t _audioReadable = 0;
         VCX::Engine::GL::UniqueProgram _backgroundProgram;
         VCX::Engine::GL::UniqueProgram _volumeProgram;
+        VCX::Engine::GL::UniqueProgram _tonemapProgram;
         VCX::Engine::GL::UniqueVertexArray _fullscreenVAO;
         VCX::Engine::GL::UniqueArrayBuffer _fullscreenVBO;
         VCX::Engine::Camera _camera;
@@ -196,7 +211,13 @@ namespace VCX::Apps::SphereAudioVisualizer {
         RenderSettings _renderSettings;
         DynamicSettings _dynamicSettings;
         BackgroundSettings _backgroundSettings;
+        ToneMappingSettings _toneMappingSettings;
         StatsSnapshot _statsSnapshot;
+        VCX::Engine::GL::UniqueFramebuffer _hdrFbo;
+        VCX::Engine::GL::UniqueRenderbuffer _hdrDepth;
+        VCX::Engine::GL::UniqueTexture2D _hdrColor;
+        glm::ivec2 _hdrSize { 0, 0 };
+        bool _hdrFramebufferValid = false;
         GLuint _statsBuffer = 0;
         float _statsTimer = 0.f;
         uint64_t _accumulatedSteps = 0;

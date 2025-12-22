@@ -31,6 +31,7 @@
 #include "Engine/app.h"
 #include "Engine/math.hpp"
 #include "Engine/GL/Sampler.hpp"
+#include "Engine/GL/Texture.hpp"
 
 namespace VCX::Apps::SphereAudioVisualizer {
     namespace {
@@ -88,6 +89,15 @@ namespace VCX::Apps::SphereAudioVisualizer {
                 spdlog::flush_on(spdlog::level::info);
                 spdlog::info("SphereAudioVisualizer logging to {}", logPath.string());
             });
+        }
+
+        bool ValidateFramebufferStatus(char const * label) {
+            GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            if (status != GL_FRAMEBUFFER_COMPLETE) {
+                spdlog::error("{} framebuffer incomplete: 0x{:X}", label, static_cast<unsigned>(status));
+                return false;
+            }
+            return true;
         }
 
         int ClampFftIndex(int idx) {
@@ -448,8 +458,59 @@ namespace VCX::Apps::SphereAudioVisualizer {
         }
     }
 
+    char const * App::ToneMappingModeName(ToneMappingMode mode) {
+        switch (mode) {
+        case ToneMappingMode::ACES:
+            return "ACES";
+        case ToneMappingMode::Reinhard:
+        default:
+            return "Reinhard";
+        }
+    }
+
     void EnsureLogger() {
         SetupLogger();
+    }
+
+    bool App::EnsureHdrFramebuffer(glm::ivec2 const & size) {
+        if (size.x <= 0 || size.y <= 0) {
+            _hdrFramebufferValid = false;
+            return false;
+        }
+        if (_hdrSize == size && _hdrFramebufferValid && _hdrColor.Get() != 0 && _hdrDepth.Get() != 0 && _hdrFbo.Get() != 0) {
+            return true;
+        }
+        _hdrSize = size;
+        if (_hdrColor.Get() == 0) {
+            _hdrColor = VCX::Engine::GL::UniqueTexture2D();
+        }
+        if (_hdrDepth.Get() == 0) {
+            _hdrDepth = VCX::Engine::GL::UniqueRenderbuffer();
+        }
+        if (_hdrFbo.Get() == 0) {
+            _hdrFbo = VCX::Engine::GL::UniqueFramebuffer();
+        }
+
+        {
+            auto const colorUse = _hdrColor.Use();
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, size.x, size.y, 0, GL_RGBA, GL_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+
+        {
+            auto const depthUse = _hdrDepth.Use();
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, size.x, size.y);
+        }
+
+        glBindFramebuffer(GL_FRAMEBUFFER, _hdrFbo.Get());
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _hdrColor.Get(), 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, _hdrDepth.Get());
+        _hdrFramebufferValid = ValidateFramebufferStatus("HDR");
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return _hdrFramebufferValid;
     }
 
     std::filesystem::path App::ConfigFilePath() const {
@@ -682,10 +743,15 @@ namespace VCX::Apps::SphereAudioVisualizer {
         _volumeProgram({
             VCX::Engine::GL::SharedShader("assets/shaders/spherevis_volume.vert"),
             VCX::Engine::GL::SharedShader("assets/shaders/spherevis_volume.frag"),
+        }),
+        _tonemapProgram({
+            VCX::Engine::GL::SharedShader("assets/shaders/spherevis_tonemap.vert"),
+            VCX::Engine::GL::SharedShader("assets/shaders/spherevis_tonemap.frag"),
         }) {
         SetupLogger();
         InitGLCapabilities();
         LogShaderProgramCompilation(_backgroundProgram.Get(), "spherevis_bg");
+        LogShaderProgramCompilation(_tonemapProgram.Get(), "spherevis_tonemap");
         _useGpuBuild = _computeSupported;
         _buildOnEnergyUpdate = true;
         spdlog::debug("SphereAudioVisualizer initialized.");
@@ -1435,14 +1501,64 @@ namespace VCX::Apps::SphereAudioVisualizer {
         }
     }
 
+    void App::RenderToneMappedResult(glm::ivec2 const & size) {
+        if (!_hdrFramebufferValid || _hdrColor.Get() == 0) {
+            return;
+        }
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, size.x, size.y);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, _hdrColor.Get());
+
+        auto & uniforms = _tonemapProgram.GetUniforms();
+        uniforms.SetByName("u_resolution", glm::vec2(static_cast<float>(size.x), static_cast<float>(size.y)));
+        uniforms.SetByName("u_hdrTexture", 0);
+        uniforms.SetByName("u_exposure", _toneMappingSettings.Exposure);
+        uniforms.SetByName("u_mode", static_cast<int>(_toneMappingSettings.Mode));
+
+        {
+            auto const progUse = _tonemapProgram.Use();
+            auto const vaoUse = _fullscreenVAO.Use();
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_DEPTH_TEST);
+    }
+
     void App::OnFrame() {
         float const deltaTime = VCX::Engine::GetDeltaTime();
         _time += deltaTime;
+
+        auto const windowSize = VCX::Engine::GetCurrentWindowSize();
+        glm::ivec2 viewport(static_cast<int>(windowSize.first), static_cast<int>(windowSize.second));
+        bool const hasViewport = viewport.x > 0 && viewport.y > 0;
+        bool const hdrReady = hasViewport && EnsureHdrFramebuffer(viewport);
+        if (hasViewport) {
+            glBindFramebuffer(GL_FRAMEBUFFER, hdrReady ? _hdrFbo.Get() : 0);
+            glViewport(0, 0, viewport.x, viewport.y);
+            glClearColor(0.f, 0.f, 0.f, 1.f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        } else {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
+
         _cameraManager.ProcessInput(_camera, ImGui::GetMousePos());
         _cameraManager.Update(_camera);
         UpdateAudioAnalysis(deltaTime);
         RenderBackground(deltaTime);
         RenderVolume(deltaTime);
+
+        if (hdrReady) {
+            RenderToneMappedResult(viewport);
+        } else {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
 
         ImGui::Begin("Sphere Audio Visualizer");
         if (_forceCpuBuild) {
@@ -1474,6 +1590,25 @@ namespace VCX::Apps::SphereAudioVisualizer {
             ImGui::SliderFloat("Speed", &_backgroundSettings.Speed, 0.1f, 4.f);
             ImGui::ColorEdit3("Color A", glm::value_ptr(_backgroundSettings.ColorA));
             ImGui::ColorEdit3("Color B", glm::value_ptr(_backgroundSettings.ColorB));
+        }
+        if (ImGui::CollapsingHeader("Tone Mapping", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (!_hdrFramebufferValid) {
+                ImGui::TextColored(ImVec4(1.f, 0.2f, 0.2f, 1.f),
+                    "HDR framebuffer invalid; rendering directly to default target.");
+            }
+            const char * toneNames[] = { "Reinhard", "ACES" };
+            int toneIndex = static_cast<int>(_toneMappingSettings.Mode);
+            if (ImGui::Combo("Tone Mapping Mode", &toneIndex, toneNames, IM_ARRAYSIZE(toneNames))) {
+                toneIndex = std::clamp(toneIndex, 0, static_cast<int>(ToneMappingMode::ACES));
+                auto newMode = static_cast<ToneMappingMode>(toneIndex);
+                if (newMode != _toneMappingSettings.Mode) {
+                    _toneMappingSettings.Mode = newMode;
+                    spdlog::info("Tone mapping mode switched to {}", ToneMappingModeName(newMode));
+                }
+            }
+            if (ImGui::SliderFloat("Exposure", &_toneMappingSettings.Exposure, 0.1f, 5.f)) {
+                _toneMappingSettings.Exposure = std::max(0.01f, _toneMappingSettings.Exposure);
+            }
         }
         ImGui::Separator();
 
