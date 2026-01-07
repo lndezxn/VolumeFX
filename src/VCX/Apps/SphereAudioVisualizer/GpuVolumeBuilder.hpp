@@ -23,6 +23,7 @@ namespace VCX::Apps::SphereAudioVisualizer {
         BuildStats DispatchBuild(std::vector<float> const & energies, SphereVolumeData::Settings const & settings);
         GLuint GetVolumeTexture() const;
         float GetLastBuildMs() const;
+        std::size_t GetVolumeSize() const { return _volumeSize; }
 
     private:
         static constexpr std::size_t kMinVolumeSize = 32;

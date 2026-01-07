@@ -1046,6 +1046,28 @@ namespace VCX::Apps::SphereAudioVisualizer {
                 _volumeData.SetSettings(settings);
             }
 
+            if (auto cameraNode = root["camera"]) {
+                _camera.Eye    = NodeToVec3(cameraNode["eye"], _camera.Eye);
+                _camera.Target = NodeToVec3(cameraNode["target"], _camera.Target);
+                _camera.Up     = NodeToVec3(cameraNode["up"], _camera.Up);
+                _cameraManager.Save(_camera);
+                _cameraManager.Reset(_camera);
+            }
+
+            if (auto backgroundNode = root["background"]) {
+                _backgroundSettings.Enable = backgroundNode["enable"].as<bool>(_backgroundSettings.Enable);
+                if (auto modeNode = backgroundNode["mode"]) {
+                    auto const modeStr = modeNode.as<std::string>();
+                    if (modeStr == "Starfield") _backgroundSettings.Mode = BackgroundMode::Starfield;
+                    else if (modeStr == "Nebula") _backgroundSettings.Mode = BackgroundMode::Nebula;
+                    else _backgroundSettings.Mode = BackgroundMode::Gradient;
+                }
+                _backgroundSettings.Intensity = backgroundNode["intensity"].as<float>(_backgroundSettings.Intensity);
+                _backgroundSettings.Speed     = backgroundNode["speed"].as<float>(_backgroundSettings.Speed);
+                _backgroundSettings.ColorA    = NodeToVec3(backgroundNode["colorA"], _backgroundSettings.ColorA);
+                _backgroundSettings.ColorB    = NodeToVec3(backgroundNode["colorB"], _backgroundSettings.ColorB);
+            }
+
             if (auto renderNode = root["render"]) {
                 _renderSettings.StepSize = renderNode["stepSize"].as<float>(_renderSettings.StepSize);
                 _renderSettings.MaxSteps = renderNode["maxSteps"].as<int>(_renderSettings.MaxSteps);
@@ -1135,6 +1157,36 @@ namespace VCX::Apps::SphereAudioVisualizer {
             volumeNode["ampScale"] = volumeSettings.AmpScale;
             volumeNode["thicknessScale"] = volumeSettings.ThicknessScale;
             root["volume"] = volumeNode;
+
+            YAML::Node cameraNode;
+            {
+                YAML::Node n; n.push_back(_camera.Eye.x); n.push_back(_camera.Eye.y); n.push_back(_camera.Eye.z);
+                cameraNode["eye"] = n;
+            }
+            {
+                YAML::Node n; n.push_back(_camera.Target.x); n.push_back(_camera.Target.y); n.push_back(_camera.Target.z);
+                cameraNode["target"] = n;
+            }
+            {
+                YAML::Node n; n.push_back(_camera.Up.x); n.push_back(_camera.Up.y); n.push_back(_camera.Up.z);
+                cameraNode["up"] = n;
+            }
+            root["camera"] = cameraNode;
+
+            YAML::Node backgroundNode;
+            backgroundNode["enable"] = _backgroundSettings.Enable;
+            backgroundNode["mode"] = BackgroundModeName(_backgroundSettings.Mode);
+            backgroundNode["intensity"] = _backgroundSettings.Intensity;
+            backgroundNode["speed"] = _backgroundSettings.Speed;
+            {
+                YAML::Node n; n.push_back(_backgroundSettings.ColorA.r); n.push_back(_backgroundSettings.ColorA.g); n.push_back(_backgroundSettings.ColorA.b);
+                backgroundNode["colorA"] = n;
+            }
+            {
+                YAML::Node n; n.push_back(_backgroundSettings.ColorB.r); n.push_back(_backgroundSettings.ColorB.g); n.push_back(_backgroundSettings.ColorB.b);
+                backgroundNode["colorB"] = n;
+            }
+            root["background"] = backgroundNode;
 
             YAML::Node renderNode;
             renderNode["stepSize"] = _renderSettings.StepSize;
@@ -1772,8 +1824,25 @@ namespace VCX::Apps::SphereAudioVisualizer {
 
         auto const volumeSettings = _volumeData.GetSettings();
         bool const useGpuBuilder = _useGpuBuild && _computeSupported;
-        bool const shouldBuildVolume = !_buildOnEnergyUpdate || _energiesUpdatedThisFrame;
+        bool sizeChanged = false;
+        if (useGpuBuilder) {
+            sizeChanged = (_gpuVolumeBuilder.GetVolumeSize() != volumeSettings.VolumeSize);
+        } else {
+             // For CPU build, we check against the Texture3D size
+             // But _volumeData updates size internally when SetSettings is called.
+             // So here we might miss it if we don't track it.
+             // However, _volumeData.UpdateVolume checks _settings which is already updated.
+             // The texture allocation happens inside UpdateVolume -> BuildVolume (resizing vector) -> Upload.
+             // But UpdateVolume is only called if shouldBuildVolume is true.
+             // We can check if _volumeData has correct size? 
+             sizeChanged = (_volumeData.GetVolumeSize() != volumeSettings.VolumeSize);
+        }
+
+        bool const shouldBuildVolume = !_buildOnEnergyUpdate || _energiesUpdatedThisFrame || sizeChanged;
         if (shouldBuildVolume) {
+            if (sizeChanged) {
+                spdlog::info("Volume size changed to {}, forcing rebuild.", volumeSettings.VolumeSize);
+            }
             if (useGpuBuilder) {
                 _gpuVolumeBuilder.EnsureResources(volumeSettings.VolumeSize);
                 auto const buildStats = _gpuVolumeBuilder.DispatchBuild(state.BandEnergies, volumeSettings);

@@ -1,1 +1,1 @@
-A volume rendered audio visualization tool
+A volume rendered audio visualization tool.
